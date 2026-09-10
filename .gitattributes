@@ -1,0 +1,6 @@
+# A Maven repository is CONTENT-ADDRESSED: every .pom, .module and maven-metadata.xml has an
+# .md5/.sha1/.sha256/.sha512 beside it that Gradle verifies byte for byte. Git's autocrlf would
+# rewrite those text files to CRLF on a Windows checkout and the checksums would stop matching -
+# a resolution failure that reads like a corrupt repository. Nothing on this branch is ever edited
+# by hand, so treat all of it as binary and let no filter touch it.
+* -text
