@@ -1,0 +1,69 @@
+package com.mattmc.mcui.menu;
+
+import net.fabricmc.fabric.api.menu.v1.ExtendedMenuType;
+import net.minecraft.network.codec.ByteBufCodecs;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.inventory.AbstractContainerMenu;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Registration for a menu that fronts an ENTITY - a mount's inventory, a vehicle's cockpit.
+ *
+ * <p>The problem this solves, which the workspace has solved twice and differently: a client-side
+ * menu factory is handed only {@code (containerId, Inventory)}. It cannot know which entity the
+ * screen belongs to, so the entity's id has to ride the open packet.
+ *
+ * <p>nijntje did it with a static {@code ModMenus.pendingMountId} field set by a clientbound payload
+ * receiver. rocketeer did it with {@link ExtendedMenuType} and {@code ByteBufCodecs.VAR_INT}.
+ * <b>The kit ships only rocketeer's</b>, for a reason worth stating plainly: it is the one that
+ * survives the race. Resolution runs when the open packet arrives, which is not guaranteed to be
+ * after the entity has synced to the client - so {@code level().getEntity(id)} can legitimately
+ * return null, and a static-field handoff has nowhere to put that fact. Here the factory is simply
+ * handed a null subject and the menu is required to tolerate it (dummy containers, {@code stillValid}
+ * false, a screen that draws empty for one frame). That null-tolerance is not defensive
+ * boilerplate; it is the contract, and it is the detail that gets lost when the next mod re-derives
+ * this from scratch.
+ *
+ * <p>Common-side, deliberately: {@link ExtendedMenuType} is registered from a mod's main entrypoint,
+ * and the menu class itself is common code a dedicated server loads.
+ */
+public final class EntityMenus {
+    private EntityMenus() {}
+
+    /**
+     * Builds the menu once the entity id from the open packet has been resolved.
+     *
+     * @param subject the entity this menu fronts, or <b>null</b> when it has not synced yet. An
+     *                implementation that dereferences it without a check is the bug this whole class
+     *                exists to prevent.
+     */
+    @FunctionalInterface
+    public interface Factory<T extends AbstractContainerMenu, E extends Entity> {
+        T create(int containerId, Inventory inventory, @Nullable E subject);
+    }
+
+    /**
+     * An {@link ExtendedMenuType} that carries an entity id and resolves it against the client level.
+     *
+     * <p>Register the result the usual way; this only builds the type:
+     * <pre>{@code
+     * ROCKET = EntityMenus.of(RocketEntity.class, RocketMenu::new);
+     * Registry.register(BuiltInRegistries.MENU, Rocketeer.id("rocket"), ROCKET);
+     * }</pre>
+     *
+     * <p>The {@code instanceof}-equivalent class check is not paranoia about a mismatched id: entity
+     * ids are recycled, so a stale open packet can name an id that now belongs to something else
+     * entirely. That resolves to null here rather than to a {@link ClassCastException}.
+     */
+    public static <T extends AbstractContainerMenu, E extends Entity> ExtendedMenuType<T, Integer> of(
+            final Class<E> subject, final Factory<T, E> factory) {
+        return new ExtendedMenuType<>(
+            (containerId, inventory, entityId) -> {
+                Entity found = inventory.player.level().getEntity(entityId);
+                return factory.create(containerId, inventory,
+                    subject.isInstance(found) ? subject.cast(found) : null);
+            },
+            ByteBufCodecs.VAR_INT);
+    }
+}

@@ -1,0 +1,31 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "gap",
+      "type": "int",
+      "default": 58
+    }
+  ],
+  "elements": [
+    {
+      "kind": "slot_grid",
+      "id": "backpack",
+      "x": 0,
+      "y": 0,
+      "cols": 9,
+      "rows": 3,
+      "container": "player",
+      "first": 9
+    },
+    {
+      "kind": "slot_grid",
+      "id": "hotbar",
+      "x": 0,
+      "y": "$gap",
+      "cols": 9,
+      "rows": 1,
+      "container": "player"
+    }
+  ]
+}

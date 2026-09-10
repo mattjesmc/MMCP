@@ -1,0 +1,79 @@
+// CROSS_LOADER_DESIGN.md §7 Stage 0.
+//
+// The question: on NeoForge, is the door mcp-toolkit's BuiltInRegistriesMixin uses still open?
+// It injects at the freeze() call inside BuiltInRegistries.bootStrap() and registers entity types
+// there — the same moment and mechanism vanilla uses for its own. On Fabric that works with no
+// fabric-api; with fabric-api the freeze moves and the injection is simply dead (the toolkit
+// registers through the other door instead). NeoForge is the third case and nothing here knows
+// which way it goes.
+//
+// Two types are registered by two different doors so one failing cannot hide the other:
+//   spike:mixin_door — from the bootStrap() injection
+//   spike:event_door — from NeoForge's own RegisterEvent
+//
+// And the part that cannot be answered on one side alone: whether a type that got in through the
+// mixin door survives REGISTRY SYNC to a connecting client. Invisible in singleplayer, fatal on a
+// dedicated server, so the spike joins a real client to a real server (see SPIKE_RESULT.md).
+plugins {
+    // No version here: settings.gradle's net.neoforged.moddev.repositories already put the plugin
+    // on the classpath, and re-declaring a version makes Gradle refuse ("already on the classpath
+    // with an unknown version").
+    id 'net.neoforged.moddev'
+}
+
+group = 'com.mattmc.spike'
+version = '0.0.1'
+
+java {
+    toolchain {
+        // Same as the rest of the workspace: Minecraft 26.2 requires Java 25.
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = 25
+    it.options.encoding = 'UTF-8'
+}
+
+// Stage 3 needs the spike to be an EXTENSION mod as well as a registration probe: NeoForge has no
+// entrypoint mechanism, so the only way to see whether one mod can hand the toolkit a class here is
+// to have a second mod do it. compileOnly, and read from the local maven repo the toolkit publishes
+// to - the RUNTIME copy is still the jar dropped into run/*/mods/ by hand, exactly as before, so the
+// dev loop does not change and the spike still boots with no toolkit present.
+def toolkitVersion = project.findProperty('mcptoolkit_version') ?: '0.85.0'
+
+// The repository for it goes in settings.gradle, not here: net.neoforged.moddev.repositories
+// declares repositories in SETTINGS, and a project-level repositories block silently takes over from
+// those - which fails the build outright on neoform-runtime.
+dependencies {
+    compileOnly "com.mattmc.mcptoolkit:mcp-toolkit:${toolkitVersion}"
+}
+
+neoForge {
+    // Latest release for 26.2 at the time of the spike (26.2.0.64; .63 is also published).
+    version = '26.2.0.64'
+
+    runs {
+        client {
+            client()
+            // Auto-join the dedicated server instead of driving the multiplayer screen by hand.
+            // Set -PjoinServer=127.0.0.1:25565 to use it.
+            if (project.hasProperty('joinServer')) {
+                programArguments.addAll('--quickPlayMultiplayer', project.property('joinServer').toString())
+            }
+        }
+        server {
+            server()
+        }
+        configureEach {
+            gameDirectory = file("run/${it.name}")
+        }
+    }
+
+    mods {
+        spike {
+            sourceSet sourceSets.main
+        }
+    }
+}

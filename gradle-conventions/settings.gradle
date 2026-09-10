@@ -1,0 +1,3 @@
+// Its own build root, like mcp-toolkit. It is consumed by maven coordinate from mavenLocal, never
+// by project path - a path would recreate exactly the coupling this workspace just removed.
+rootProject.name = 'gradle-conventions'

@@ -1,0 +1,11 @@
+{
+  "required": true,
+  "package": "com.mattmc.spike.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "mixins": [
+    "BuiltInRegistriesMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

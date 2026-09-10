@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "container",
+      "type": "container"
+    },
+    {
+      "name": "first",
+      "type": "int",
+      "default": 0
+    },
+    {
+      "name": "gap",
+      "type": "int",
+      "default": 18
+    },
+    {
+      "name": "hint",
+      "type": "sprite",
+      "default": null
+    }
+  ],
+  "elements": [
+    {
+      "kind": "slot",
+      "id": "template",
+      "x": 0,
+      "y": 0,
+      "container": "$container",
+      "index": "$first",
+      "icon": "$hint"
+    },
+    {
+      "kind": "slot",
+      "id": "material",
+      "x": "$gap",
+      "y": 0,
+      "container": "$container",
+      "index": "$first + 1"
+    }
+  ]
+}

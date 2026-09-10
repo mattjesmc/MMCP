@@ -1,0 +1,73 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "count",
+      "type": "int"
+    },
+    {
+      "name": "container",
+      "type": "container"
+    },
+    {
+      "name": "action",
+      "type": "action"
+    },
+    {
+      "name": "pitch",
+      "type": "int",
+      "default": 20
+    },
+    {
+      "name": "first",
+      "type": "int",
+      "default": 0
+    },
+    {
+      "name": "gap",
+      "type": "int",
+      "default": 20
+    },
+    {
+      "name": "sprite",
+      "type": "sprite",
+      "default": "minecraft:widget/page_forward"
+    },
+    {
+      "name": "sprite_hovered",
+      "type": "sprite",
+      "default": "minecraft:widget/page_forward_highlighted"
+    }
+  ],
+  "elements": [
+    {
+      "kind": "repeat",
+      "id": "row",
+      "count": "$count",
+      "children": [
+        {
+          "kind": "slot",
+          "id": "slot",
+          "x": 0,
+          "y": "$i * $pitch",
+          "container": "$container",
+          "index": "$i + $first"
+        },
+        {
+          "kind": "button",
+          "id": "pick",
+          "x": "$gap",
+          "y": "$i * $pitch",
+          "w": 12,
+          "h": 16,
+          "text": "",
+          "action": "$action",
+          "args": ["$i"],
+          "face": "none",
+          "sprite": "$sprite",
+          "sprite_hovered": "$sprite_hovered"
+        }
+      ]
+    }
+  ]
+}

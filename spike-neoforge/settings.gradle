@@ -1,0 +1,30 @@
+// CROSS_LOADER_DESIGN.md §7 Stage 0 — the NeoForge spike. KEPT, not throwaway: see README.md and
+// §15.6. Still its own build root, depended on by nothing, which is why it is easy to delete by
+// mistake and why that would take all NeoForge coverage with it.
+pluginManagement {
+    repositories {
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases'
+        }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+plugins {
+    id 'net.neoforged.moddev.repositories' version '2.0.144'
+}
+
+// Stage 3: the spike is also an mcp-toolkit EXTENSION mod, and compiles against the toolkit's API.
+// Here rather than in build.gradle because moddev's repositories plugin declares its repositories in
+// settings, and a project-level `repositories` block replaces those wholesale.
+dependencyResolutionManagement {
+    repositories {
+        // This group ONLY. An unfiltered mavenLocal() lets a stale locally-installed copy of any
+        // dependency shadow the real one, which is a quiet way to build against the wrong thing.
+        mavenLocal { content { includeGroup 'com.mattmc.mcptoolkit' } }
+    }
+}
+
+rootProject.name = 'spike-neoforge'

@@ -1,0 +1,36 @@
+{
+  "required": true,
+  "package": "com.mattmc.mcptoolkit.mixin",
+  "mixins": [
+    "AbstractFurnaceBlockEntityAccessor",
+    "BootstrapMixin",
+    "BrewingStandBlockEntityAccessor",
+    "BuiltInRegistriesMixin",
+    "CommandsMixin",
+    "DefaultAttributesMixin",
+    "LevelTickersAccessor",
+    "MinecraftServerMixin",
+    "MobMixin",
+    "PlayerListMixin",
+    "ServerGamePacketListenerImplMixin",
+    "ServerLevelEntityCallbacksMixin",
+    "ServerPlayerGameModeAccessor",
+    "ServerboundCustomPayloadPacketMixin"
+  ],
+  "client": [
+    "client.ChatListenerMixin",
+    "client.GameRendererAccessor",
+    "client.MinecraftPackRepositoryMixin",
+    "client.HudMixin",
+    "client.LayerDefinitionsMixin",
+    "client.MinecraftClientMixin",
+    "client.MouseHandlerAccessor",
+    "client.MouseHandlerMixin",
+    "client.ScreenSpaceMixin",
+    "client.ScreenAccessor",
+    "client.ScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

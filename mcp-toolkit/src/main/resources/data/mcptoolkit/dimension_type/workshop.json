@@ -1,0 +1,28 @@
+{
+  "_comment": "The human's canvas (RENDER_SEAM_DESIGN.md 10.5). Deliberately NOT the studio: a white, skyless, shadowless, full-bright field is right for photographing a subject and hostile to building in by hand for an hour. So: a sky to orient by (skybox overworld gives horizon, sun and moon), no timelines so the sun never moves, and has_skylight FALSE so there is no night and no weather - Level.canHaveWeather() requires skylight. Block face shading is a property of the model, not of the sky, so form still reads without shadows.",
+  "_comment_light": "visual/ambient_light_color IS THE LIGHT HERE, and `ambient_light` below is NOT. In 26.2 the lightmap is built by LightmapRenderStateExtractor from environment attributes - block_light_tint, sky_light_factor, sky_light_color and ambient_light_color - and DimensionType.ambientLight() survives only in Lightmap.getBrightness/LevelReader.getLightLevelDependentMagicValue, i.e. the HUD vignette and the gameplay magic value. This shipped without the attribute, whose default is opaque BLACK (-16777216), so a workshop with no torches in it was pure black with silhouettes. Vanilla sets 0A0A0A overworld, 302821 nether, 3F473F end; those are night floors. This is a WORK LIGHT, so it is far brighter - and with no skylight it is the only light there is, which is the trade: no night, no weather, and no shadows either.",
+  "has_fixed_time": true,
+  "has_skylight": false,
+  "has_ceiling": false,
+  "has_ender_dragon_fight": false,
+  "coordinate_scale": 1.0,
+  "min_y": -64,
+  "height": 384,
+  "logical_height": 384,
+  "infiniburn": "#minecraft:infiniburn_overworld",
+  "ambient_light": 0.55,
+  "monster_spawn_light_level": 0,
+  "monster_spawn_block_light_limit": 0,
+  "skybox": "overworld",
+  "attributes": {
+    "visual/fog_color": "#9BA1A6",
+    "visual/sky_color": "#B9C0C6",
+    "visual/fog_start_distance": 512.0,
+    "visual/fog_end_distance": 2048.0,
+    "visual/sky_fog_end_distance": 2048.0,
+    "visual/cloud_fog_end_distance": 2048.0,
+    "visual/ambient_light_color": "#B4B4B4",
+    "visual/sun_angle": 45.0,
+    "visual/star_brightness": 0.0
+  }
+}

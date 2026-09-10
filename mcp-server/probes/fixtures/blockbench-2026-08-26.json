@@ -1,0 +1,4134 @@
+[
+ {
+  "name": "create_animation",
+  "description": "Creates a new animation with keyframes for bones.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Name of the animation"
+    },
+    "loop": {
+     "type": "boolean",
+     "default": false,
+     "description": "Whether the animation should loop"
+    },
+    "animation_length": {
+     "type": "number",
+     "description": "Length of the animation in seconds"
+    },
+    "bones": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "time": {
+         "type": "number"
+        },
+        "position": {
+         "type": "array",
+         "items": {
+          "type": "number"
+         },
+         "minItems": 3,
+         "maxItems": 3,
+         "description": "3D vector [x, y, z]."
+        },
+        "rotation": {
+         "$ref": "#/properties/bones/additionalProperties/items/properties/position",
+         "description": "3D vector [x, y, z]."
+        },
+        "scale": {
+         "anyOf": [
+          {
+           "$ref": "#/properties/bones/additionalProperties/items/properties/position"
+          },
+          {
+           "type": "number"
+          }
+         ]
+        }
+       },
+       "required": [
+        "time"
+       ],
+       "additionalProperties": false
+      }
+     },
+     "description": "Keyframes for each bone"
+    },
+    "particle_effects": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string",
+      "description": "Effect name"
+     },
+     "description": "Particle effects with timestamps as keys"
+    }
+   },
+   "required": [
+    "name",
+    "bones"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "manage_keyframes",
+  "description": "Creates, deletes, or edits keyframes in the animation timeline for specific bones and channels.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "animation_id": {
+     "type": "string",
+     "description": "Animation UUID or name. If not provided, uses current animation."
+    },
+    "action": {
+     "type": "string",
+     "enum": [
+      "create",
+      "delete",
+      "edit",
+      "select"
+     ],
+     "description": "Action to perform on keyframes."
+    },
+    "bone_name": {
+     "type": "string",
+     "description": "Name of the bone/group to manage keyframes for."
+    },
+    "channel": {
+     "type": "string",
+     "enum": [
+      "rotation",
+      "position",
+      "scale"
+     ],
+     "description": "Animation channel to modify."
+    },
+    "keyframes": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "time": {
+        "type": "number",
+        "description": "Time in seconds for the keyframe."
+       },
+       "values": {
+        "anyOf": [
+         {
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3,
+          "description": "3D vector [x, y, z]."
+         },
+         {
+          "type": "number"
+         }
+        ],
+        "description": "Values: [x,y,z] for position/rotation, number for uniform scale."
+       },
+       "interpolation": {
+        "type": "string",
+        "enum": [
+         "linear",
+         "catmullrom",
+         "bezier",
+         "step"
+        ],
+        "default": "linear",
+        "description": "Interpolation type for the keyframe."
+       },
+       "bezier_handles": {
+        "type": "object",
+        "properties": {
+         "left_time": {
+          "type": "number"
+         },
+         "left_value": {
+          "anyOf": [
+           {
+            "$ref": "#/properties/keyframes/items/properties/values/anyOf/0"
+           },
+           {
+            "type": "number"
+           }
+          ]
+         },
+         "right_time": {
+          "type": "number"
+         },
+         "right_value": {
+          "anyOf": [
+           {
+            "$ref": "#/properties/keyframes/items/properties/values/anyOf/0"
+           },
+           {
+            "type": "number"
+           }
+          ]
+         }
+        },
+        "additionalProperties": false,
+        "description": "Bezier handle positions for bezier interpolation."
+       }
+      },
+      "required": [
+       "time"
+      ],
+      "additionalProperties": false
+     },
+     "description": "Keyframe data for the action."
+    }
+   },
+   "required": [
+    "action",
+    "bone_name",
+    "channel",
+    "keyframes"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "animation_graph_editor",
+  "description": "Controls animation curves in the graph editor for fine-tuning animations.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "animation_id": {
+     "type": "string",
+     "description": "Animation UUID or name. If not provided, uses current animation."
+    },
+    "bone_name": {
+     "type": "string",
+     "description": "Name of the bone/group to modify curves for."
+    },
+    "channel": {
+     "type": "string",
+     "enum": [
+      "rotation",
+      "position",
+      "scale"
+     ],
+     "description": "Animation channel to modify."
+    },
+    "axis": {
+     "anyOf": [
+      {
+       "type": "string",
+       "enum": [
+        "x",
+        "y",
+        "z"
+       ]
+      },
+      {
+       "type": "string",
+       "const": "all"
+      }
+     ],
+     "default": "all",
+     "description": "Axis to modify curves for."
+    },
+    "action": {
+     "type": "string",
+     "enum": [
+      "smooth",
+      "linear",
+      "ease_in",
+      "ease_out",
+      "ease_in_out",
+      "stepped",
+      "custom"
+     ],
+     "description": "Type of curve modification to apply."
+    },
+    "keyframe_range": {
+     "type": "object",
+     "properties": {
+      "start": {
+       "type": "number",
+       "description": "Start time in seconds."
+      },
+      "end": {
+       "type": "number",
+       "description": "End time in seconds."
+      }
+     },
+     "required": [
+      "start",
+      "end"
+     ],
+     "additionalProperties": false,
+     "description": "Time range to apply the curve modification. If not provided, applies to all keyframes."
+    },
+    "custom_curve": {
+     "type": "object",
+     "properties": {
+      "control_point_1": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 2,
+       "maxItems": 2,
+       "description": "First control point [time, value]."
+      },
+      "control_point_2": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 2,
+       "maxItems": 2,
+       "description": "Second control point [time, value]."
+      }
+     },
+     "required": [
+      "control_point_1",
+      "control_point_2"
+     ],
+     "additionalProperties": false,
+     "description": "Custom bezier curve control points (only for 'custom' action)."
+    }
+   },
+   "required": [
+    "bone_name",
+    "channel",
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "bone_rigging",
+  "description": "Creates and manipulates the bone structure (rig) of a model for animation.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "create",
+      "parent",
+      "unparent",
+      "delete",
+      "rename",
+      "set_pivot",
+      "set_ik",
+      "mirror"
+     ],
+     "description": "Action to perform on the bone structure."
+    },
+    "bone_data": {
+     "type": "object",
+     "properties": {
+      "name": {
+       "type": "string",
+       "description": "Name of the bone."
+      },
+      "parent": {
+       "type": "string",
+       "description": "Parent bone name."
+      },
+      "origin": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 3,
+       "maxItems": 3,
+       "description": "Pivot point of the bone."
+      },
+      "rotation": {
+       "$ref": "#/properties/bone_data/properties/origin",
+       "description": "Initial rotation of the bone."
+      },
+      "children": {
+       "type": "array",
+       "items": {
+        "type": "string"
+       },
+       "description": "Names of elements to add to this bone."
+      },
+      "ik_enabled": {
+       "type": "boolean",
+       "description": "Enable inverse kinematics for this bone."
+      },
+      "ik_target": {
+       "type": "string",
+       "description": "Target bone for IK chain."
+      },
+      "mirror_axis": {
+       "type": "string",
+       "enum": [
+        "x",
+        "y",
+        "z"
+       ],
+       "description": "Axis to mirror the bone across."
+      }
+     },
+     "required": [
+      "name"
+     ],
+     "additionalProperties": false,
+     "description": "Bone configuration data."
+    }
+   },
+   "required": [
+    "action",
+    "bone_data"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "animation_timeline",
+  "description": "Controls the animation timeline, including playback, time scrubbing, and timeline settings.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "play",
+      "pause",
+      "stop",
+      "set_time",
+      "set_length",
+      "set_fps",
+      "loop",
+      "select_range"
+     ],
+     "description": "Timeline action to perform."
+    },
+    "time": {
+     "type": "number",
+     "description": "Time in seconds (for set_time action)."
+    },
+    "length": {
+     "type": "number",
+     "description": "Animation length in seconds (for set_length action)."
+    },
+    "fps": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 120,
+     "description": "Frames per second (for set_fps action)."
+    },
+    "loop_mode": {
+     "type": "string",
+     "enum": [
+      "once",
+      "loop",
+      "hold"
+     ],
+     "description": "Loop mode for the animation."
+    },
+    "range": {
+     "type": "object",
+     "properties": {
+      "start": {
+       "type": "number",
+       "description": "Start time in seconds."
+      },
+      "end": {
+       "type": "number",
+       "description": "End time in seconds."
+      }
+     },
+     "required": [
+      "start",
+      "end"
+     ],
+     "additionalProperties": false,
+     "description": "Time range for selection."
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "batch_keyframe_operations",
+  "description": "Performs batch operations on multiple keyframes at once.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "selection": {
+     "type": "string",
+     "enum": [
+      "all",
+      "selected",
+      "range",
+      "pattern"
+     ],
+     "default": "selected",
+     "description": "Which keyframes to operate on."
+    },
+    "range": {
+     "type": "object",
+     "properties": {
+      "start": {
+       "type": "number",
+       "description": "Start time in seconds."
+      },
+      "end": {
+       "type": "number",
+       "description": "End time in seconds."
+      }
+     },
+     "required": [
+      "start",
+      "end"
+     ],
+     "additionalProperties": false,
+     "description": "Time range for keyframe selection."
+    },
+    "pattern": {
+     "type": "object",
+     "properties": {
+      "interval": {
+       "type": "number",
+       "description": "Time interval between keyframes."
+      },
+      "offset": {
+       "type": "number",
+       "default": 0,
+       "description": "Time offset for the pattern."
+      }
+     },
+     "required": [
+      "interval"
+     ],
+     "additionalProperties": false,
+     "description": "Pattern-based selection."
+    },
+    "operation": {
+     "type": "string",
+     "enum": [
+      "offset",
+      "scale",
+      "reverse",
+      "mirror",
+      "smooth",
+      "bake"
+     ],
+     "description": "Operation to perform on keyframes."
+    },
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "offset_time": {
+       "type": "number",
+       "description": "Time offset to apply."
+      },
+      "offset_values": {
+       "type": "array",
+       "items": {
+        "type": "number"
+       },
+       "minItems": 3,
+       "maxItems": 3,
+       "description": "Value offset to apply."
+      },
+      "scale_factor": {
+       "type": "number",
+       "description": "Scale factor for time or values."
+      },
+      "scale_pivot": {
+       "type": "number",
+       "description": "Pivot point for scaling."
+      },
+      "mirror_axis": {
+       "type": "string",
+       "enum": [
+        "x",
+        "y",
+        "z"
+       ],
+       "description": "Axis to mirror values across."
+      },
+      "bake_interval": {
+       "type": "number",
+       "description": "Interval for baking keyframes."
+      }
+     },
+     "additionalProperties": false,
+     "description": "Operation-specific parameters."
+    }
+   },
+   "required": [
+    "operation"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "animation_copy_paste",
+  "description": "Copies and pastes animation data between bones or animations.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "copy",
+      "paste",
+      "mirror_paste"
+     ],
+     "description": "Copy or paste action."
+    },
+    "source": {
+     "type": "object",
+     "properties": {
+      "animation": {
+       "type": "string",
+       "description": "Source animation name or UUID."
+      },
+      "bone": {
+       "type": "string",
+       "description": "Source bone name."
+      },
+      "channels": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "rotation",
+         "position",
+         "scale"
+        ]
+       },
+       "default": [
+        "rotation",
+        "position",
+        "scale"
+       ],
+       "description": "Channels to copy."
+      },
+      "time_range": {
+       "type": "object",
+       "properties": {
+        "start": {
+         "type": "number",
+         "description": "Start time in seconds."
+        },
+        "end": {
+         "type": "number",
+         "description": "End time in seconds."
+        }
+       },
+       "required": [
+        "start",
+        "end"
+       ],
+       "additionalProperties": false,
+       "description": "Time range to copy. If not provided, copies all keyframes."
+      }
+     },
+     "required": [
+      "bone"
+     ],
+     "additionalProperties": false,
+     "description": "Source data for copy operation."
+    },
+    "target": {
+     "type": "object",
+     "properties": {
+      "animation": {
+       "type": "string",
+       "description": "Target animation name or UUID."
+      },
+      "bone": {
+       "type": "string",
+       "description": "Target bone name."
+      },
+      "time_offset": {
+       "type": "number",
+       "default": 0,
+       "description": "Time offset for pasted keyframes."
+      },
+      "mirror_axis": {
+       "type": "string",
+       "enum": [
+        "x",
+        "y",
+        "z"
+       ],
+       "description": "Axis to mirror across for mirror_paste."
+      }
+     },
+     "required": [
+      "bone"
+     ],
+     "additionalProperties": false,
+     "description": "Target data for paste operation."
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_armatures",
+  "description": "Lists all armatures in the current project with their basic info.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "get_armature",
+  "description": "Gets detailed information about a specific armature including its bones.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the armature."
+    },
+    "include_bones": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to include bone hierarchy in response."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "add_armature",
+  "description": "Creates a new armature in the project. An armature is a skeletal rig used for mesh deformation.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "default": "armature",
+     "description": "Name for the new armature."
+    },
+    "visibility": {
+     "type": "boolean",
+     "default": true
+    },
+    "locked": {
+     "type": "boolean",
+     "default": false
+    },
+    "add_initial_bone": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to add an initial bone to the armature."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "remove_armature",
+  "description": "Removes an armature and all its bones from the project.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the armature to remove."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "update_armature",
+  "description": "Updates properties of an existing armature.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the armature."
+    },
+    "name": {
+     "type": "string",
+     "description": "New name for the armature."
+    },
+    "visibility": {
+     "type": "boolean"
+    },
+    "locked": {
+     "type": "boolean"
+    },
+    "export": {
+     "type": "boolean",
+     "description": "Whether to export this armature."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_armature_bones",
+  "description": "Lists all armature bones, optionally filtered by a specific armature.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "armature_id": {
+     "type": "string",
+     "description": "Filter bones by armature UUID or name. If not provided, lists all bones."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_armature_bone",
+  "description": "Gets detailed information about a specific armature bone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the bone."
+    },
+    "include_weights": {
+     "type": "boolean",
+     "default": false,
+     "description": "Whether to include all vertex weights in response."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "add_armature_bone",
+  "description": "Creates a new bone and adds it to an armature or parent bone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "parent_id": {
+     "type": "string",
+     "description": "UUID or name of parent armature or bone."
+    },
+    "name": {
+     "type": "string",
+     "default": "bone",
+     "description": "Name for the new bone."
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Position of the bone. Defaults to [0, parent.length, 0] for child bones."
+    },
+    "rotation": {
+     "$ref": "#/properties/origin",
+     "description": "3D vector [x, y, z].",
+     "default": [
+      0,
+      0,
+      0
+     ]
+    },
+    "length": {
+     "type": "number",
+     "default": 8,
+     "description": "Length of the bone."
+    },
+    "width": {
+     "type": "number",
+     "default": 2,
+     "description": "Width of the bone."
+    },
+    "connected": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether bone is connected to parent."
+    },
+    "color": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 7,
+     "description": "Marker color index (0-7)."
+    }
+   },
+   "required": [
+    "parent_id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "remove_armature_bone",
+  "description": "Removes an armature bone from the project.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the bone to remove."
+    },
+    "remove_children": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to also remove child bones."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "update_armature_bone",
+  "description": "Updates properties of an existing armature bone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "UUID or name of the bone."
+    },
+    "name": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "New position of the bone."
+    },
+    "rotation": {
+     "$ref": "#/properties/origin",
+     "description": "New rotation [x, y, z] in degrees."
+    },
+    "length": {
+     "type": "number"
+    },
+    "width": {
+     "type": "number"
+    },
+    "connected": {
+     "type": "boolean"
+    },
+    "color": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 7
+    },
+    "visibility": {
+     "type": "boolean"
+    },
+    "locked": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "update_armature_bones_batch",
+  "description": "Updates multiple armature bones at once with the same properties.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "description": "ID or name of the element."
+     },
+     "description": "Array of bone UUIDs or names to update."
+    },
+    "visibility": {
+     "type": "boolean"
+    },
+    "locked": {
+     "type": "boolean"
+    },
+    "color": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 7
+    }
+   },
+   "required": [
+    "ids"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "select_armature_bones",
+  "description": "Selects armature bones by ID. Can select single bone, multiple bones, or bone hierarchy.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "description": "ID or name of the element."
+     },
+     "description": "Array of bone UUIDs or names to select."
+    },
+    "armature_id": {
+     "type": "string",
+     "description": "Select all bones in this armature."
+    },
+    "include_descendants": {
+     "type": "boolean",
+     "default": false,
+     "description": "Include all descendant bones in selection."
+    },
+    "clear_selection": {
+     "type": "boolean",
+     "default": true,
+     "description": "Clear existing selection before selecting."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_vertex_weights",
+  "description": "Gets vertex weights for a mesh from all bones affecting it.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "bone_id": {
+     "type": "string",
+     "description": "Filter weights by specific bone."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "set_vertex_weight",
+  "description": "Sets the weight of a specific vertex on a bone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "bone_id": {
+     "type": "string",
+     "description": "UUID or name of the bone."
+    },
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "vertex_key": {
+     "type": "string",
+     "description": "Key of the vertex in the mesh."
+    },
+    "weight": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 1,
+     "description": "Weight value (0-1). Set to 0 to remove weight."
+    }
+   },
+   "required": [
+    "bone_id",
+    "vertex_key",
+    "weight"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "set_vertex_weights_batch",
+  "description": "Sets multiple vertex weights at once on a bone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "bone_id": {
+     "type": "string",
+     "description": "UUID or name of the bone."
+    },
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "weights": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+     },
+     "description": "Map of vertex_key -> weight value."
+    }
+   },
+   "required": [
+    "bone_id",
+    "weights"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "clear_vertex_weights",
+  "description": "Clears all vertex weights from a bone for a specific mesh.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "bone_id": {
+     "type": "string",
+     "description": "UUID or name of the bone."
+    },
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    }
+   },
+   "required": [
+    "bone_id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "capture_screenshot",
+  "description": "Returns the image data of the current view.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or UUID."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "capture_app_screenshot",
+  "description": "Returns the image data of the Blockbench app.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "set_camera_angle",
+  "description": "Sets the camera angle to the specified value.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "position": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Camera position."
+    },
+    "target": {
+     "type": "array",
+     "items": {
+      "$ref": "#/properties/position/items"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Camera target position."
+    },
+    "rotation": {
+     "$ref": "#/properties/target",
+     "description": "Camera rotation."
+    },
+    "projection": {
+     "type": "string",
+     "enum": [
+      "unset",
+      "orthographic",
+      "perspective"
+     ],
+     "description": "Camera projection type."
+    }
+   },
+   "required": [
+    "position",
+    "projection"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "place_cube",
+  "description": "Places a cube of the given size at the specified position. Texture and group are optional.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "elements": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "origin": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Pivot point of the cube.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "from": {
+        "$ref": "#/properties/elements/items/properties/origin",
+        "description": "Starting point of the cube.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "to": {
+        "$ref": "#/properties/elements/items/properties/origin",
+        "description": "Ending point of the cube.",
+        "default": [
+         1,
+         1,
+         1
+        ]
+       },
+       "rotation": {
+        "$ref": "#/properties/elements/items/properties/origin",
+        "description": "Rotation of the cube.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       }
+      },
+      "required": [
+       "name"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 1,
+     "description": "Array of cubes to place."
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name to apply to the cube."
+    },
+    "group": {
+     "type": "string",
+     "description": "Group/bone to which the cube belongs."
+    },
+    "faces": {
+     "anyOf": [
+      {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "north",
+         "south",
+         "east",
+         "west",
+         "up",
+         "down"
+        ]
+       },
+       "description": "Array of faces to apply the texture to."
+      },
+      {
+       "anyOf": [
+        {
+         "not": {}
+        },
+        {
+         "type": "boolean"
+        }
+       ],
+       "description": "Whether to apply the texture to all faces. Set to `true` to enable auto UV mapping."
+      },
+      {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "face": {
+          "type": "string",
+          "enum": [
+           "north",
+           "south",
+           "east",
+           "west",
+           "up",
+           "down"
+          ],
+          "description": "Face to apply the texture to."
+         },
+         "uv": {
+          "type": "array",
+          "items": {
+           "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4,
+          "description": "Custom UV mapping for the face."
+         }
+        },
+        "required": [
+         "face",
+         "uv"
+        ],
+        "additionalProperties": false
+       },
+       "description": "Array of faces with custom UV mapping."
+      }
+     ],
+     "default": true,
+     "description": "Faces to apply the texture to. Set to `true` to enable auto UV mapping."
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "modify_cube",
+  "description": "Modifies the cube with the given ID. Auto UV setting: saved as an integer, where 0 means disabled, 1 means enabled, and 2 means relative auto UV (cube position affects UV)",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "ID or name of the cube to modify. Defaults to selected, which could be more than one."
+    },
+    "name": {
+     "type": "string",
+     "description": "New name of the cube."
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Pivot point of the cube."
+    },
+    "from": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Starting point of the cube."
+    },
+    "to": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Ending point of the cube."
+    },
+    "rotation": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Rotation of the cube."
+    },
+    "autouv": {
+     "type": "string",
+     "enum": [
+      "0",
+      "1",
+      "2"
+     ],
+     "description": "Auto UV setting. 0 = disabled, 1 = enabled, 2 = relative auto UV."
+    },
+    "uv_offset": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2,
+     "description": "UV offset for the texture."
+    },
+    "mirror_uv": {
+     "type": "boolean",
+     "description": "Whether to mirror the UVs."
+    },
+    "shade": {
+     "type": "boolean",
+     "description": "Whether to apply shading to the cube."
+    },
+    "inflate": {
+     "type": "number",
+     "description": "Inflation amount for the cube."
+    },
+    "color": {
+     "type": "number",
+     "description": "Single digit to represent a color from a palette."
+    },
+    "visibility": {
+     "type": "boolean",
+     "description": "Whether the cube is visible or not."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "remove_element",
+  "description": "Removes the element with the given ID.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "ID or name of the element to remove."
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "add_group",
+  "description": "Adds a new group with the given name and options.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "3D vector [x, y, z]."
+    },
+    "rotation": {
+     "$ref": "#/properties/origin"
+    },
+    "parent": {
+     "type": "string",
+     "default": "root"
+    },
+    "visibility": {
+     "type": "boolean",
+     "default": true
+    },
+    "autouv": {
+     "type": "string",
+     "enum": [
+      "0",
+      "1",
+      "2"
+     ],
+     "default": "0",
+     "description": "Auto UV setting. 0 = disabled, 1 = enabled, 2 = relative auto UV."
+    },
+    "selected": {
+     "type": "boolean",
+     "default": false
+    },
+    "shade": {
+     "type": "boolean",
+     "default": false
+    }
+   },
+   "required": [
+    "name",
+    "origin",
+    "rotation"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_outline",
+  "description": "Returns the project outline as a hierarchical tree. Each node reports { name, uuid, type (cube|mesh|group), children? }. Groups contain child cubes, meshes, and sub-groups. Use `include_cubes=false` to get a group-only skeleton when you just need structure, or `max_depth` to bound very deep trees.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "include_cubes": {
+     "type": "boolean",
+     "default": true,
+     "description": "If true, include cubes as leaves. If false, return groups only."
+    },
+    "include_meshes": {
+     "type": "boolean",
+     "default": true,
+     "description": "If true, include meshes as leaves. If false, omit meshes."
+    },
+    "max_depth": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 32,
+     "default": 32,
+     "description": "Maximum tree depth to traverse. Use a small value to summarize large projects."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "duplicate_element",
+  "description": "Duplicates a cube, mesh or group by ID or name.  You may offset the duplicate or assign a new name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "ID or name of the element to duplicate."
+    },
+    "offset": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "3D vector [x, y, z].",
+     "default": [
+      0,
+      0,
+      0
+     ]
+    },
+    "newName": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "rename_element",
+  "description": "Renames a cube, mesh or group by ID or name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "ID or name of the element to rename."
+    },
+    "new_name": {
+     "type": "string",
+     "description": "New name to assign."
+    }
+   },
+   "required": [
+    "id",
+    "new_name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "find_elements_by_criteria",
+  "description": "Searches the current project for elements matching the given criteria. Supports name pattern matching (regex or substring), type filtering, scoping to a parent group, cube size ranges, and selection scope. Returns element metadata, never modifies state.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name_pattern": {
+     "type": "string",
+     "description": "Regex pattern to match element names (e.g., '^arm_.*'). Case-sensitive."
+    },
+    "name_contains": {
+     "type": "string",
+     "description": "Substring to match in element names. Case-insensitive."
+    },
+    "type": {
+     "type": "string",
+     "enum": [
+      "cube",
+      "mesh",
+      "group",
+      "any"
+     ],
+     "default": "any",
+     "description": "Restrict to a single element type."
+    },
+    "parent_group": {
+     "type": "string",
+     "description": "UUID or name of a parent group. Only descendants of this group are returned."
+    },
+    "min_size": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Minimum [x,y,z] size for cubes. Cubes smaller on any axis are excluded."
+    },
+    "max_size": {
+     "$ref": "#/properties/min_size",
+     "description": "Maximum [x,y,z] size for cubes. Cubes larger on any axis are excluded."
+    },
+    "selected_only": {
+     "type": "boolean",
+     "default": false,
+     "description": "Only consider currently selected elements."
+    },
+    "limit": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 1000,
+     "default": 200,
+     "description": "Maximum number of results to return."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "select_all_of_type",
+  "description": "Selects all elements of the given type (cube, mesh, or group) in the current project. Optionally restrict to descendants of a parent group, or add to (rather than replace) the current selection.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "type": {
+     "type": "string",
+     "enum": [
+      "cube",
+      "mesh",
+      "group"
+     ],
+     "description": "Element type to select."
+    },
+    "add_to_selection": {
+     "type": "boolean",
+     "default": false,
+     "description": "If true, add to current selection. If false, replace selection."
+    },
+    "parent_group": {
+     "type": "string",
+     "description": "UUID or name of a parent group. If provided, only descendants of this group are selected."
+    }
+   },
+   "required": [
+    "type"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "filter_by_material",
+  "description": "Returns all elements that reference the given texture. For cubes, includes the list of face keys (e.g., 'north', 'up') that use the texture. For meshes, returns the mesh if any face uses the texture.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture": {
+     "type": "string",
+     "description": "Texture ID, UUID or name to search for."
+    },
+    "include_face_keys": {
+     "type": "boolean",
+     "default": true,
+     "description": "Include the list of cube face keys (e.g., 'north') that reference the texture."
+    }
+   },
+   "required": [
+    "texture"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_selection",
+  "description": "Returns the current selection state: selected cube/mesh/group UUIDs and names, plus the active texture. Use this to verify what `apply_texture` or a paint tool with `fill_mode=\"selected_elements\"` will target.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "list_export_formats",
+  "description": "Lists all registered export codecs with their id, display name, file extension, and whether they support compile/export. Use before `export_model` to pick a codec.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "only_current_format": {
+     "type": "boolean",
+     "default": false,
+     "description": "If true, only return codecs compatible with the current project's format."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "export_model",
+  "description": "Compiles the current project through the named codec and returns the result as text. Optionally writes the compiled content to a filesystem path (requires user permission in Blockbench v5.0+). Use `list_export_formats` first to discover codec IDs.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "codec_id": {
+     "type": "string",
+     "description": "Codec ID to use for export (e.g., 'obj', 'gltf', 'project', 'bedrock'). If omitted, uses the current project format's codec. Use `list_export_formats` to see available IDs."
+    },
+    "options": {
+     "type": "object",
+     "additionalProperties": {},
+     "description": "Codec-specific export options. Defaults to the codec's configured export options."
+    },
+    "path": {
+     "type": "string",
+     "description": "Absolute filesystem path to write the compiled model to. Requires user permission (Blockbench v5.0+ prompts for 'fs' access). If omitted, content is returned in the response only."
+    },
+    "max_content_length": {
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 2000000,
+     "default": 100000,
+     "description": "Maximum number of characters to include in the returned `content` field. Use 0 to omit content entirely (useful when only writing to disk). Larger values risk exceeding MCP context limits."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "undo",
+  "description": "Undoes the most recent edit in the current project. Use `steps` to undo multiple edits in a single call. Returns the action(s) that were undone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "steps": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 100,
+     "default": 1,
+     "description": "Number of steps to undo."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "redo",
+  "description": "Redoes the most recently undone edit. Use `steps` to redo multiple edits in a single call. Returns the action(s) that were redone.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "steps": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 100,
+     "default": 1,
+     "description": "Number of steps to redo."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_undo_stack",
+  "description": "Returns the current undo/redo history: the list of edit entries, the current index, and which entries are undone vs. applied. Use this to inspect available undo/redo operations and find named checkpoints.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "limit": {
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 200,
+     "default": 50,
+     "description": "Maximum number of entries to return (most recent first)."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "save_checkpoint",
+  "description": "Inserts a named marker into the undo history. The marker can later be located with `get_undo_stack` so the agent knows how many times to call `undo` to return to this state. Does not modify the project.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 120,
+     "description": "Descriptive name for the checkpoint. Shown in undo history so agents can navigate back to this point."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "from_geo_json",
+  "description": "Imports a model from a GeoJSON file.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "geojson": {
+     "type": "string",
+     "description": "Path to the GeoJSON file or data URL, or the GeoJSON string itself."
+    }
+   },
+   "required": [
+    "geojson"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_face_material_instances",
+  "description": "Gets the material instance names for cube faces. Material instances are used in Bedrock Block format to map faces to materials defined in the minecraft:material_instances component.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "cube_id": {
+     "type": "string",
+     "description": "ID or name of the cube. If not provided, uses the first selected cube."
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "north",
+       "south",
+       "east",
+       "west",
+       "up",
+       "down"
+      ]
+     },
+     "description": "Specific faces to get/clear material instances for. If not provided, returns/clears all faces."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "set_face_material_instance",
+  "description": "Sets the material instance name for one or more cube faces. Material instances are strings that map to materials defined in the minecraft:material_instances component for Bedrock Block format.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "cube_id": {
+     "type": "string",
+     "description": "ID or name of the cube. If not provided, applies to all selected cubes."
+    },
+    "material_name": {
+     "type": "string",
+     "description": "The material instance name to assign. Use empty string to clear the material instance."
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "north",
+       "south",
+       "east",
+       "west",
+       "up",
+       "down"
+      ]
+     },
+     "default": [
+      "north",
+      "south",
+      "east",
+      "west",
+      "up",
+      "down"
+     ],
+     "description": "Faces to set the material instance on. Defaults to all faces."
+    }
+   },
+   "required": [
+    "material_name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_material_instances",
+  "description": "Lists all unique material instance names used in the project. Returns the material instance names along with which cubes and faces use them.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "bulk_set_material_instances",
+  "description": "Sets material instance names on multiple cubes at once. Useful for assigning different material instances to different faces across the project.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "assignments": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "cube_id": {
+        "type": "string",
+        "description": "ID or name of the cube."
+       },
+       "faces": {
+        "type": "array",
+        "items": {
+         "type": "string",
+         "enum": [
+          "north",
+          "south",
+          "east",
+          "west",
+          "up",
+          "down"
+         ]
+        },
+        "description": "Faces to set the material instance on."
+       },
+       "material_name": {
+        "type": "string",
+        "description": "Material instance name to assign."
+       }
+      },
+      "required": [
+       "cube_id",
+       "faces",
+       "material_name"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 1,
+     "description": "Array of material instance assignments."
+    }
+   },
+   "required": [
+    "assignments"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "clear_material_instances",
+  "description": "Clears (removes) material instance names from cube faces. Useful for resetting material assignments.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "cube_id": {
+     "type": "string",
+     "description": "ID or name of the cube. If not provided, clears from all selected cubes."
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "north",
+       "south",
+       "east",
+       "west",
+       "up",
+       "down"
+      ]
+     },
+     "description": "Specific faces to clear. If not provided, clears all faces."
+    },
+    "all_cubes": {
+     "type": "boolean",
+     "default": false,
+     "description": "If true, clears material instances from all cubes in the project."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "place_mesh",
+  "description": "Places a mesh at the specified position. Texture and group are optional.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "elements": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "position": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Position of the mesh.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "rotation": {
+        "$ref": "#/properties/elements/items/properties/position",
+        "description": "Rotation of the mesh.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "scale": {
+        "$ref": "#/properties/elements/items/properties/position",
+        "description": "Scale of the mesh.",
+        "default": [
+         1,
+         1,
+         1
+        ]
+       },
+       "vertices": {
+        "type": "array",
+        "items": {
+         "type": "array",
+         "items": {
+          "$ref": "#/properties/elements/items/properties/position/items"
+         },
+         "minItems": 3,
+         "maxItems": 3,
+         "description": "Vertex coordinates in the mesh."
+        },
+        "default": [],
+        "description": "Vertices of the mesh."
+       }
+      },
+      "required": [
+       "name"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 1,
+     "description": "Array of meshes to place."
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name to apply to the mesh."
+    },
+    "group": {
+     "type": "string",
+     "description": "Group/bone to which the mesh belongs."
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "extrude_mesh",
+  "description": "Extrudes selected faces or edges of a mesh.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "distance": {
+     "type": "number",
+     "default": 1,
+     "description": "Distance to extrude."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "faces",
+      "edges",
+      "vertices"
+     ],
+     "default": "faces",
+     "description": "What to extrude: faces, edges, or vertices."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "subdivide_mesh",
+  "description": "Subdivides selected faces of a mesh to create more geometry.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "cuts": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 10,
+     "default": 1,
+     "description": "Number of subdivision cuts to make."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_sphere",
+  "description": "Creates a sphere mesh at the specified position with the given parameters. The sphere is created as a mesh with vertices and faces using spherical coordinates.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "elements": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string",
+        "description": "Name of the sphere."
+       },
+       "position": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Position of the sphere center."
+       },
+       "diameter": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 64,
+        "default": 16,
+        "description": "Diameter of the sphere."
+       },
+       "sides": {
+        "type": "number",
+        "minimum": 3,
+        "maximum": 48,
+        "default": 12,
+        "description": "Number of horizontal divisions (affects sphere quality)."
+       },
+       "rotation": {
+        "type": "array",
+        "items": {
+         "$ref": "#/properties/elements/items/properties/position/items"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "Rotation of the sphere.",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "align_edges": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether to align edges for better geometry."
+       }
+      },
+      "required": [
+       "name",
+       "position"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 1,
+     "description": "Array of spheres to create."
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name to apply to the sphere."
+    },
+    "group": {
+     "type": "string",
+     "description": "Group/bone to which the sphere belongs."
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "select_mesh_elements",
+  "description": "Selects vertices, edges, or faces of a mesh for manipulation.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh to select elements from."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "vertex",
+      "edge",
+      "face"
+     ],
+     "description": "Selection mode."
+    },
+    "elements": {
+     "type": "array",
+     "items": {
+      "type": [
+       "string",
+       "number"
+      ]
+     },
+     "description": "Specific elements to select. If not provided, selects all."
+    },
+    "action": {
+     "type": "string",
+     "enum": [
+      "select",
+      "add",
+      "remove",
+      "toggle"
+     ],
+     "default": "select",
+     "description": "Selection action: select (replace), add, remove, or toggle."
+    }
+   },
+   "required": [
+    "mesh_id",
+    "mode"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "move_mesh_vertices",
+  "description": "Moves selected vertices of a mesh by the specified offset.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "offset": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Offset to move vertices by [x, y, z]."
+    },
+    "vertices": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Specific vertex keys to move. If not provided, moves all selected vertices."
+    }
+   },
+   "required": [
+    "offset"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "delete_mesh_elements",
+  "description": "Deletes selected vertices, edges, or faces from a mesh.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "vertices",
+      "edges",
+      "faces"
+     ],
+     "default": "faces",
+     "description": "What to delete: vertices, edges, or faces."
+    },
+    "keep_vertices": {
+     "type": "boolean",
+     "default": false,
+     "description": "When deleting faces/edges, whether to keep the vertices."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "merge_mesh_vertices",
+  "description": "Merges vertices that are within a specified distance of each other.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh."
+    },
+    "threshold": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 10,
+     "default": 0.1,
+     "description": "Maximum distance between vertices to merge."
+    },
+    "selected_only": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to only merge selected vertices."
+    }
+   },
+   "required": [
+    "mesh_id"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_mesh_face",
+  "description": "Creates a new face from selected vertices.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "vertices": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 3,
+     "maxItems": 4,
+     "description": "Vertex keys to create face from. Must be 3 or 4 vertices."
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name to apply to the new face."
+    }
+   },
+   "required": [
+    "vertices"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_cylinder",
+  "description": "Creates one or more cylinder meshes with optional end caps.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "elements": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "position": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "3D vector [x, y, z]."
+       },
+       "height": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 64,
+        "default": 16
+       },
+       "diameter": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 64,
+        "default": 16
+       },
+       "sides": {
+        "type": "number",
+        "minimum": 3,
+        "maximum": 64,
+        "default": 12
+       },
+       "rotation": {
+        "$ref": "#/properties/elements/items/properties/position",
+        "description": "3D vector [x, y, z].",
+        "default": [
+         0,
+         0,
+         0
+        ]
+       },
+       "capped": {
+        "type": "boolean",
+        "default": true
+       }
+      },
+      "required": [
+       "name",
+       "position"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 1
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "group": {
+     "type": "string",
+     "description": "Group/bone ID or name."
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "knife_tool",
+  "description": "Uses the knife tool to cut custom edges into mesh faces.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh to cut."
+    },
+    "points": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "position": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3,
+        "description": "3D position of the cut point."
+       },
+       "face": {
+        "type": "string",
+        "description": "Face key to attach the point to."
+       }
+      },
+      "required": [
+       "position"
+      ],
+      "additionalProperties": false
+     },
+     "minItems": 2,
+     "description": "Points defining the cut path."
+    }
+   },
+   "required": [
+    "mesh_id",
+    "points"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "paint_fill_tool",
+  "description": "Uses the fill/bucket tool to fill areas with color.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "x": {
+     "type": "number",
+     "description": "X coordinate to start fill."
+    },
+    "y": {
+     "type": "number",
+     "description": "Y coordinate to start fill."
+    },
+    "color": {
+     "type": "string",
+     "description": "Fill color as hex string."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Fill opacity (0-255)."
+    },
+    "tolerance": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "Color tolerance for fill."
+    },
+    "fill_mode": {
+     "type": "string",
+     "enum": [
+      "color",
+      "color_connected",
+      "face",
+      "element",
+      "selected_elements",
+      "selection"
+     ],
+     "default": "color_connected",
+     "description": "Fill mode."
+    },
+    "blend_mode": {
+     "type": "string",
+     "enum": [
+      "default",
+      "set_opacity",
+      "color",
+      "behind",
+      "multiply",
+      "add",
+      "screen",
+      "overlay",
+      "difference"
+     ],
+     "description": "Fill blend mode."
+    }
+   },
+   "required": [
+    "x",
+    "y"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "draw_shape_tool",
+  "description": "Draws geometric shapes on textures.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "shape": {
+     "type": "string",
+     "enum": [
+      "rectangle",
+      "rectangle_h",
+      "ellipse",
+      "ellipse_h"
+     ],
+     "description": "Shape to draw. '_h' suffix means hollow."
+    },
+    "start": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "Start X coordinate."
+      },
+      "y": {
+       "type": "number",
+       "description": "Start Y coordinate."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "end": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "End X coordinate."
+      },
+      "y": {
+       "type": "number",
+       "description": "End Y coordinate."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "color": {
+     "type": "string",
+     "description": "Shape color as hex string."
+    },
+    "line_width": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 50,
+     "description": "Line width for hollow shapes."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Shape opacity (0-255)."
+    },
+    "blend_mode": {
+     "type": "string",
+     "enum": [
+      "default",
+      "set_opacity",
+      "color",
+      "behind",
+      "multiply",
+      "add",
+      "screen",
+      "overlay",
+      "difference"
+     ],
+     "description": "Shape blend mode."
+    }
+   },
+   "required": [
+    "shape",
+    "start",
+    "end"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "gradient_tool",
+  "description": "Applies gradients to textures.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "start": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "Gradient start X coordinate."
+      },
+      "y": {
+       "type": "number",
+       "description": "Gradient start Y coordinate."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "end": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "Gradient end X coordinate."
+      },
+      "y": {
+       "type": "number",
+       "description": "Gradient end Y coordinate."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "start_color": {
+     "type": "string",
+     "description": "Start color as hex string."
+    },
+    "end_color": {
+     "type": "string",
+     "description": "End color as hex string."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Gradient opacity (0-255)."
+    },
+    "blend_mode": {
+     "type": "string",
+     "enum": [
+      "default",
+      "set_opacity",
+      "color",
+      "behind",
+      "multiply",
+      "add",
+      "screen",
+      "overlay",
+      "difference"
+     ],
+     "description": "Gradient blend mode."
+    }
+   },
+   "required": [
+    "start",
+    "end",
+    "start_color",
+    "end_color"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "color_picker_tool",
+  "description": "Picks colors from textures and sets them as the active color.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "x": {
+     "type": "number",
+     "description": "X coordinate to pick color from."
+    },
+    "y": {
+     "type": "number",
+     "description": "Y coordinate to pick color from."
+    },
+    "set_as_secondary": {
+     "type": "boolean",
+     "default": false,
+     "description": "Set as secondary color instead of primary."
+    },
+    "pick_opacity": {
+     "type": "boolean",
+     "default": false,
+     "description": "Also pick and apply the pixel's opacity."
+    }
+   },
+   "required": [
+    "x",
+    "y"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "copy_brush_tool",
+  "description": "Uses the copy/clone brush to copy texture areas.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "source": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "Source X coordinate to copy from."
+      },
+      "y": {
+       "type": "number",
+       "description": "Source Y coordinate to copy from."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "target": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number",
+       "description": "Target X coordinate to paste to."
+      },
+      "y": {
+       "type": "number",
+       "description": "Target Y coordinate to paste to."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "brush_size": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 100,
+     "description": "Copy brush size."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Copy opacity (0-255)."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "copy",
+      "sample",
+      "pattern"
+     ],
+     "default": "copy",
+     "description": "Copy brush mode."
+    }
+   },
+   "required": [
+    "source",
+    "target"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "eraser_tool",
+  "description": "Erases parts of textures with customizable settings.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "coordinates": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "x": {
+        "type": "number",
+        "description": "X coordinate to erase at."
+       },
+       "y": {
+        "type": "number",
+        "description": "Y coordinate to erase at."
+       }
+      },
+      "required": [
+       "x",
+       "y"
+      ],
+      "additionalProperties": false
+     },
+     "description": "Array of coordinates to erase at."
+    },
+    "brush_size": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 100,
+     "description": "Eraser brush size."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Eraser opacity (0-255)."
+    },
+    "softness": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "Eraser softness percentage."
+    },
+    "shape": {
+     "type": "string",
+     "enum": [
+      "square",
+      "circle"
+     ],
+     "description": "Eraser shape."
+    },
+    "connect_strokes": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to connect erase strokes with lines."
+    }
+   },
+   "required": [
+    "coordinates"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "paint_settings",
+  "description": "Configures paint mode settings and preferences.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mirror_painting": {
+     "type": "object",
+     "properties": {
+      "enabled": {
+       "type": "boolean",
+       "description": "Enable mirror painting."
+      },
+      "axis": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "enum": [
+         "x",
+         "y",
+         "z"
+        ]
+       },
+       "description": "Mirror axes."
+      },
+      "texture": {
+       "type": "boolean",
+       "description": "Enable texture mirroring."
+      },
+      "texture_center": {
+       "type": "object",
+       "properties": {
+        "x": {
+         "type": "number",
+         "description": "X coordinate of texture mirror center."
+        },
+        "y": {
+         "type": "number",
+         "description": "Y coordinate of texture mirror center."
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "additionalProperties": false,
+       "description": "Texture mirror center."
+      }
+     },
+     "required": [
+      "enabled"
+     ],
+     "additionalProperties": false,
+     "description": "Mirror painting settings."
+    },
+    "lock_alpha": {
+     "type": "boolean",
+     "description": "Lock alpha channel while painting."
+    },
+    "pixel_perfect": {
+     "type": "boolean",
+     "description": "Enable pixel perfect drawing."
+    },
+    "paint_side_restrict": {
+     "type": "boolean",
+     "description": "Restrict painting to current face side."
+    },
+    "color_erase_mode": {
+     "type": "boolean",
+     "description": "Enable color erase mode."
+    },
+    "brush_opacity_modifier": {
+     "type": "string",
+     "enum": [
+      "none",
+      "pressure",
+      "tilt"
+     ],
+     "description": "Brush opacity modifier for stylus."
+    },
+    "brush_size_modifier": {
+     "$ref": "#/properties/brush_opacity_modifier",
+     "description": "Brush size modifier for stylus."
+    },
+    "paint_with_stylus_only": {
+     "type": "boolean",
+     "description": "Only allow painting with stylus input."
+    },
+    "pick_color_opacity": {
+     "type": "boolean",
+     "description": "Pick opacity when using color picker."
+    },
+    "pick_combined_color": {
+     "type": "boolean",
+     "description": "Pick combined layer colors."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "paint_with_brush",
+  "description": "Paints on textures using the brush tool with customizable settings.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "coordinates": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "x": {
+        "type": "number",
+        "description": "X coordinate on texture."
+       },
+       "y": {
+        "type": "number",
+        "description": "Y coordinate on texture."
+       }
+      },
+      "required": [
+       "x",
+       "y"
+      ],
+      "additionalProperties": false
+     },
+     "description": "Array of coordinates to paint at."
+    },
+    "brush_settings": {
+     "type": "object",
+     "properties": {
+      "size": {
+       "type": "number",
+       "minimum": 1,
+       "maximum": 100,
+       "description": "Brush size."
+      },
+      "opacity": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 255,
+       "description": "Opacity (0-255)."
+      },
+      "softness": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 100,
+       "description": "Brush softness percentage."
+      },
+      "shape": {
+       "type": "string",
+       "enum": [
+        "square",
+        "circle"
+       ],
+       "description": "Brush shape."
+      },
+      "color": {
+       "type": "string",
+       "description": "Brush color as hex string."
+      },
+      "blend_mode": {
+       "type": "string",
+       "enum": [
+        "default",
+        "set_opacity",
+        "color",
+        "behind",
+        "multiply",
+        "add",
+        "screen",
+        "overlay",
+        "difference"
+       ],
+       "description": "Brush blend mode."
+      }
+     },
+     "additionalProperties": false,
+     "description": "Brush settings to apply."
+    },
+    "connect_strokes": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to connect paint strokes with lines."
+    }
+   },
+   "required": [
+    "coordinates"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_brush_preset",
+  "description": "Creates a custom brush preset with specified settings.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Name of the brush preset."
+    },
+    "size": {
+     "type": "number",
+     "minimum": 1,
+     "maximum": 100,
+     "description": "Brush size."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Opacity (0-255)."
+    },
+    "softness": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "Brush softness percentage."
+    },
+    "shape": {
+     "type": "string",
+     "enum": [
+      "square",
+      "circle"
+     ],
+     "description": "Brush shape."
+    },
+    "color": {
+     "type": "string",
+     "description": "Brush color as hex string."
+    },
+    "blend_mode": {
+     "type": "string",
+     "enum": [
+      "default",
+      "set_opacity",
+      "color",
+      "behind",
+      "multiply",
+      "add",
+      "screen",
+      "overlay",
+      "difference"
+     ],
+     "description": "Brush blend mode."
+    },
+    "pixel_perfect": {
+     "type": "boolean",
+     "description": "Enable pixel perfect drawing."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "load_brush_preset",
+  "description": "Loads and applies a brush preset by name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "preset_name": {
+     "type": "string",
+     "description": "Name of the brush preset to load."
+    }
+   },
+   "required": [
+    "preset_name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "texture_selection",
+  "description": "Creates, modifies, or manipulates texture selections for painting.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "select_rectangle",
+      "select_ellipse",
+      "select_all",
+      "clear_selection",
+      "invert_selection",
+      "expand_selection",
+      "contract_selection",
+      "feather_selection"
+     ],
+     "description": "Selection action to perform."
+    },
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "coordinates": {
+     "type": "object",
+     "properties": {
+      "x1": {
+       "type": "number",
+       "description": "Start X coordinate."
+      },
+      "y1": {
+       "type": "number",
+       "description": "Start Y coordinate."
+      },
+      "x2": {
+       "type": "number",
+       "description": "End X coordinate."
+      },
+      "y2": {
+       "type": "number",
+       "description": "End Y coordinate."
+      }
+     },
+     "required": [
+      "x1",
+      "y1",
+      "x2",
+      "y2"
+     ],
+     "additionalProperties": false,
+     "description": "Selection area coordinates."
+    },
+    "radius": {
+     "type": "number",
+     "description": "Radius for expand/contract/feather operations."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "create",
+      "add",
+      "subtract",
+      "intersect"
+     ],
+     "default": "create",
+     "description": "Selection mode."
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "texture_layer_management",
+  "description": "Creates, manages, and manipulates texture layers.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "enum": [
+      "create_layer",
+      "delete_layer",
+      "duplicate_layer",
+      "merge_down",
+      "set_opacity",
+      "set_blend_mode",
+      "move_layer",
+      "rename_layer",
+      "flatten_layers"
+     ],
+     "description": "Layer management action."
+    },
+    "texture_id": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    },
+    "layer_name": {
+     "type": "string",
+     "description": "Name of the layer."
+    },
+    "opacity": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 100,
+     "description": "Layer opacity percentage."
+    },
+    "blend_mode": {
+     "type": "string",
+     "enum": [
+      "normal",
+      "multiply",
+      "screen",
+      "overlay",
+      "soft_light",
+      "hard_light",
+      "color_dodge",
+      "color_burn",
+      "darken",
+      "lighten",
+      "difference",
+      "exclusion"
+     ],
+     "description": "Layer blend mode."
+    },
+    "target_index": {
+     "type": "number",
+     "description": "Target position for moving layers."
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_project",
+  "description": "Creates a new project with the given name and project type.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "format": {
+     "type": "string",
+     "default": "bedrock_block",
+     "description": "Project format ID from Blockbench's Formats registry."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "get_project_info",
+  "description": "Returns read-only project orientation: format id and display name, project name/UUID, texture resolution (texture_width/height), element counts, and a summary of top-level groups. Prefer this over `risky_eval` for first-look inspection — no JavaScript execution required.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "create_texture",
+  "description": "Creates a new texture with the given name and size.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "width": {
+     "type": "number",
+     "minimum": 16,
+     "maximum": 4096,
+     "default": 16
+    },
+    "height": {
+     "type": "number",
+     "minimum": 16,
+     "maximum": 4096,
+     "default": 16
+    },
+    "data": {
+     "type": "string",
+     "description": "Path to the image file or data URL."
+    },
+    "group": {
+     "type": "string"
+    },
+    "fill_color": {
+     "anyOf": [
+      {
+       "type": "array",
+       "items": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 255
+       },
+       "minItems": 4,
+       "maxItems": 4,
+       "description": "RGBA [R, G, B, A]"
+      },
+      {
+       "type": "string",
+       "pattern": "^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{8})$"
+      },
+      {
+       "type": "string",
+       "pattern": "^[a-z]{3,20}$"
+      }
+     ],
+     "description": "RGBA color to fill the texture, as tuple or HEX string."
+    },
+    "layer_name": {
+     "type": "string",
+     "description": "Name of the texture layer. Required if fill_color is set."
+    },
+    "pbr_channel": {
+     "type": "string",
+     "enum": [
+      "color",
+      "normal",
+      "height",
+      "mer"
+     ],
+     "description": "PBR channel to use for the texture. Color, normal, height, or Metalness/Emissive/Roughness (MER) map."
+    },
+    "render_mode": {
+     "type": "string",
+     "enum": [
+      "default",
+      "emissive",
+      "additive",
+      "layered"
+     ],
+     "default": "default",
+     "description": "Render mode for the texture. Default, emissive, additive, or layered."
+    },
+    "render_sides": {
+     "type": "string",
+     "enum": [
+      "auto",
+      "front",
+      "double"
+     ],
+     "default": "auto",
+     "description": "Render sides for the texture. Auto, front, or double."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "apply_texture",
+  "description": "Applies the given texture to the element with the specified ID.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "id": {
+     "type": "string",
+     "description": "ID or name of the element to apply the texture to."
+    },
+    "texture": {
+     "type": "string",
+     "description": "ID or name of the texture to apply."
+    },
+    "applyTo": {
+     "type": "string",
+     "enum": [
+      "all",
+      "blank",
+      "none"
+     ],
+     "description": "Apply texture to element or group.",
+     "default": "blank"
+    }
+   },
+   "required": [
+    "id",
+    "texture"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "add_texture_group",
+  "description": "Adds a new texture group with the given name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "textures": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Array of texture IDs or names to add to the group."
+    },
+    "is_material": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether the texture group is a PBR material or not."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_textures",
+  "description": "Returns a list of all textures in the Blockbench editor.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "get_texture",
+  "description": "Returns the image data of the given texture or default texture.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture": {
+     "type": "string",
+     "description": "Texture ID or name. If not provided, uses selected texture."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "create_pbr_material",
+  "description": "Creates a new PBR material (texture group with is_material=true) and optionally assigns textures to PBR channels. Use this for Minecraft Bedrock resource packs or any format supporting PBR.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string",
+     "description": "Name of the material."
+    },
+    "color_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the color (albedo) channel."
+    },
+    "normal_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the normal map channel."
+    },
+    "height_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the height/displacement map channel."
+    },
+    "mer_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the MER (Metalness/Emissive/Roughness) channel."
+    },
+    "color_value": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 255
+     },
+     "minItems": 4,
+     "maxItems": 4,
+     "description": "Uniform RGBA color [R,G,B,A] when no color texture is provided."
+    },
+    "mer_value": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 255
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Uniform MER values [Metalness, Emissive, Roughness] (0-255) when no MER texture is provided."
+    },
+    "subsurface_value": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Subsurface scattering value (0-255) for Bedrock 1.21.30+ materials."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "configure_material",
+  "description": "Configures an existing PBR material's properties including channel assignments, uniform values, and subsurface scattering.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "material": {
+     "type": "string",
+     "description": "Material name or UUID to configure."
+    },
+    "color_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the color channel, or 'none' to use uniform color."
+    },
+    "normal_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the normal map, or 'none' to remove."
+    },
+    "height_texture": {
+     "type": "string",
+     "description": "Texture ID/name for the height map, or 'none' to remove."
+    },
+    "mer_texture": {
+     "type": "string",
+     "description": "Texture ID/name for MER channel, or 'none' to use uniform values."
+    },
+    "color_value": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 255
+     },
+     "minItems": 4,
+     "maxItems": 4,
+     "description": "Uniform RGBA color [R,G,B,A] when no color texture."
+    },
+    "mer_value": {
+     "type": "array",
+     "items": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 255
+     },
+     "minItems": 3,
+     "maxItems": 3,
+     "description": "Uniform MER values [Metalness, Emissive, Roughness] (0-255)."
+    },
+    "subsurface_value": {
+     "type": "number",
+     "minimum": 0,
+     "maximum": 255,
+     "description": "Subsurface scattering value (0-255)."
+    }
+   },
+   "required": [
+    "material"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "list_materials",
+  "description": "Lists all PBR materials (texture groups with is_material=true) and their assigned textures per channel.",
+  "inputSchema": {
+   "$schema": "http://json-schema.org/draft-07/schema#",
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "get_material_info",
+  "description": "Gets detailed information about a PBR material including the compiled texture_set.json preview for Bedrock export.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "material": {
+     "type": "string",
+     "description": "Material name or UUID."
+    }
+   },
+   "required": [
+    "material"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "import_texture_set",
+  "description": "Imports a Minecraft Bedrock texture_set.json file and creates a PBR material with the associated textures.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "Path to the .texture_set.json file to import."
+    }
+   },
+   "required": [
+    "path"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "assign_texture_channel",
+  "description": "Assigns a texture to a specific PBR channel within a material.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "material": {
+     "type": "string",
+     "description": "Material name or UUID."
+    },
+    "texture": {
+     "type": "string",
+     "description": "Texture name or UUID to assign."
+    },
+    "channel": {
+     "type": "string",
+     "enum": [
+      "color",
+      "normal",
+      "height",
+      "mer"
+     ],
+     "description": "PBR channel to assign the texture to."
+    }
+   },
+   "required": [
+    "material",
+    "texture",
+    "channel"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "save_material_config",
+  "description": "Saves the material's texture_set.json file to disk (Bedrock format). Requires the color texture to have a valid file path.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "material": {
+     "type": "string",
+     "description": "Material name or UUID to save."
+    }
+   },
+   "required": [
+    "material"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "activate_texture",
+  "description": "Activates the given texture in the Blockbench texture panel so that subsequent paint operations (draw_shape_tool, paint_with_brush, gradient_tool, etc.) target it. Most paint tools already call this internally when a texture_id is provided, but you can invoke it explicitly to pin the active texture across multiple calls.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "texture": {
+     "type": "string",
+     "description": "Texture ID, UUID, or name to activate in the texture panel."
+    }
+   },
+   "required": [
+    "texture"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "trigger_action",
+  "description": "Triggers an action in the Blockbench editor.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "action": {
+     "type": "string",
+     "description": "Action ID from Blockbench's BarItems registry."
+    },
+    "confirmDialog": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether or not to automatically confirm any dialogs that appear as a result of the action."
+    },
+    "confirmEvent": {
+     "type": "string",
+     "description": "Stringified form of event arguments."
+    }
+   },
+   "required": [
+    "action"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "risky_eval",
+  "description": "Evaluates the given expression and logs it to the console. Do not pass `console` commands as they will not work.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "code": {
+     "type": "string",
+     "description": "JavaScript code to evaluate. Do not pass `console` commands or comments."
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "emulate_clicks",
+  "description": "Emulates clicks on the given interface elements.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "position": {
+     "type": "object",
+     "properties": {
+      "x": {
+       "type": "number"
+      },
+      "y": {
+       "type": "number"
+      },
+      "button": {
+       "type": "string",
+       "enum": [
+        "left",
+        "right"
+       ],
+       "default": "left",
+       "description": "Mouse button to use."
+      }
+     },
+     "required": [
+      "x",
+      "y"
+     ],
+     "additionalProperties": false
+    },
+    "drag": {
+     "type": "object",
+     "properties": {
+      "to": {
+       "type": "object",
+       "properties": {
+        "x": {
+         "type": "number",
+         "description": "X coordinate."
+        },
+        "y": {
+         "type": "number",
+         "description": "Y coordinate."
+        }
+       },
+       "required": [
+        "x",
+        "y"
+       ],
+       "additionalProperties": false
+      },
+      "duration": {
+       "type": "number",
+       "default": 100,
+       "description": "Duration of the drag in milliseconds."
+      }
+     },
+     "required": [
+      "to"
+     ],
+     "additionalProperties": false,
+     "description": "Drag options. If set, will perform a drag from position to 'to'."
+    }
+   },
+   "required": [
+    "position"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "fill_dialog",
+  "description": "Fills the dialog with the given values.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "values": {
+     "type": "string",
+     "description": "Stringified form of values to fill the dialog with."
+    },
+    "confirm": {
+     "type": "boolean",
+     "default": true,
+     "description": "Whether to confirm or cancel the dialog after filling it. True to confirm, false to cancel."
+    }
+   },
+   "required": [
+    "values"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "set_mesh_uv",
+  "description": "Sets UV coordinates for mesh faces or vertices.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh."
+    },
+    "face_key": {
+     "type": "string",
+     "description": "Face key to set UV for."
+    },
+    "uv_mapping": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "array",
+      "items": {
+       "type": "number"
+      },
+      "minItems": 2,
+      "maxItems": 2,
+      "description": "2D vector [x, y]."
+     },
+     "description": "UV coordinates for each vertex of the face."
+    }
+   },
+   "required": [
+    "mesh_id",
+    "face_key",
+    "uv_mapping"
+   ],
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "auto_uv_mesh",
+  "description": "Automatically generates UV mapping for selected mesh faces.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "project",
+      "unwrap",
+      "cylinder",
+      "sphere"
+     ],
+     "default": "project",
+     "description": "UV mapping mode: project from view, unwrap, cylinder, or sphere mapping."
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Specific face keys to UV map. If not provided, maps all selected faces."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ },
+ {
+  "name": "rotate_mesh_uv",
+  "description": "Rotates UV coordinates of selected mesh faces.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "mesh_id": {
+     "type": "string",
+     "description": "ID or name of the mesh. If not provided, uses selected mesh."
+    },
+    "angle": {
+     "type": "string",
+     "enum": [
+      "-90",
+      "90",
+      "180"
+     ],
+     "default": "90",
+     "description": "Rotation angle in degrees."
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Specific face keys to rotate UV for. If not provided, rotates all selected faces."
+    }
+   },
+   "additionalProperties": false,
+   "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+ }
+]

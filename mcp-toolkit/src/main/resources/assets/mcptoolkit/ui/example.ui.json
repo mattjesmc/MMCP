@@ -1,0 +1,350 @@
+{
+  "format": 1,
+  "title": "UI example",
+  "width": 256,
+  "height": 222,
+  "sheet": {
+    "texture": "mcptoolkit:textures/gui/example.png"
+  },
+  "containers": [
+    {
+      "name": "input",
+      "size": 4
+    }
+  ],
+  "actions": [
+    "launch",
+    "cancel",
+    {
+      "name": "select",
+      "args": [
+        {
+          "name": "index",
+          "size": 3
+        }
+      ]
+    }
+  ],
+  "bindings": [
+    {
+      "name": "progress",
+      "max": 200,
+      "preview": 130
+    },
+    {
+      "name": "fuel",
+      "max": "fuel_max",
+      "wide": true,
+      "preview": 42000
+    },
+    {
+      "name": "fuel_max",
+      "wide": true,
+      "preview": 100000
+    }
+  ],
+  "elements": [
+    {
+      "kind": "frame",
+      "id": "outer",
+      "x": 0,
+      "y": 0,
+      "w": 256,
+      "h": 222
+    },
+    {
+      "kind": "well",
+      "id": "smelting",
+      "x": 8,
+      "y": 18,
+      "w": 160,
+      "h": 40
+    },
+    {
+      "kind": "label",
+      "id": "fuel_label",
+      "x": 14,
+      "y": 24,
+      "text": "Fuel"
+    },
+    {
+      "kind": "slot",
+      "id": "fuel_slot",
+      "x": 14,
+      "y": 36,
+      "container": "input",
+      "index": 0,
+      "placeholder": {
+        "item": "minecraft:coal",
+        "count": 12
+      }
+    },
+    {
+      "kind": "bar",
+      "id": "progress_bar",
+      "x": 40,
+      "y": 40,
+      "w": 60,
+      "h": 8,
+      "binding": "progress"
+    },
+    {
+      "kind": "slot",
+      "id": "output_slot",
+      "x": 110,
+      "y": 36,
+      "container": "input",
+      "index": 1,
+      "icon": "minecraft:container/slot/smithing_template_armor_trim"
+    },
+    {
+      "kind": "item",
+      "id": "logo",
+      "x": 134,
+      "y": 37,
+      "item": "minecraft:diamond",
+      "count": 3
+    },
+    {
+      "kind": "icon",
+      "id": "check",
+      "x": 154,
+      "y": 38,
+      "w": 12,
+      "h": 12,
+      "sprite": "minecraft:icon/checkmark"
+    },
+    {
+      "kind": "label",
+      "id": "blurb",
+      "x": 8,
+      "y": 60,
+      "w": 140,
+      "text": "A wrapped label runs on to a second line.",
+      "mode": "wrapped"
+    },
+    {
+      "kind": "bar",
+      "id": "fuel_gauge",
+      "x": 160,
+      "y": 60,
+      "w": 8,
+      "h": 30,
+      "binding": "fuel",
+      "orientation": "vertical",
+      "fill": "#FFAA5500"
+    },
+    {
+      "kind": "label",
+      "id": "ticker",
+      "x": 8,
+      "y": 82,
+      "w": 80,
+      "text": "This scrolling label is much longer than eighty pixels",
+      "mode": "scrolling",
+      "color": "#FF808080"
+    },
+    {
+      "kind": "label",
+      "id": "clipped",
+      "x": 92,
+      "y": 82,
+      "w": 56,
+      "text": "Truncated with an ellipsis",
+      "mode": "truncated"
+    },
+    {
+      "kind": "region",
+      "id": "gauge",
+      "x": 150,
+      "y": 82,
+      "w": 18,
+      "h": 10
+    },
+    {
+      "kind": "row",
+      "id": "footer",
+      "x": 8,
+      "y": 94,
+      "spacing": 4,
+      "children": [
+        {
+          "kind": "button",
+          "id": "launch",
+          "w": 50,
+          "text": "Launch",
+          "action": "launch",
+          "tooltip": "Send it up",
+          "enabled": "progress"
+        },
+        {
+          "kind": "button",
+          "id": "ok",
+          "w": 20,
+          "text": "",
+          "action": "cancel",
+          "sprite": "minecraft:icon/checkmark",
+          "tooltip": {
+            "hook": "ok"
+          }
+        },
+        {
+          "kind": "spacer",
+          "w": 4
+        },
+        {
+          "kind": "column",
+          "id": "notes",
+          "spacing": 1,
+          "children": [
+            {
+              "kind": "label",
+              "id": "note_a",
+              "text": "col a"
+            },
+            {
+              "kind": "label",
+              "id": "note_b",
+              "text": "col b",
+              "offset": [2, 0]
+            }
+          ]
+        },
+        {
+          "kind": "stack",
+          "id": "badge",
+          "children": [
+            {
+              "kind": "panel",
+              "id": "badge_bg",
+              "w": 32,
+              "h": 20
+            },
+            {
+              "kind": "label",
+              "id": "badge_text",
+              "text": "on",
+              "align": [0.5, 0.5]
+            }
+          ]
+        },
+        {
+          "kind": "grid",
+          "id": "pairs",
+          "spacing": 2,
+          "children": [
+            {
+              "kind": "label",
+              "id": "g00",
+              "row": 0,
+              "col": 0,
+              "text": "1"
+            },
+            {
+              "kind": "label",
+              "id": "g01",
+              "row": 0,
+              "col": 1,
+              "text": "2"
+            },
+            {
+              "kind": "label",
+              "id": "g10",
+              "row": 1,
+              "col": 0,
+              "text": "3"
+            },
+            {
+              "kind": "label",
+              "id": "g11",
+              "row": 1,
+              "col": 1,
+              "text": "4",
+              "padding": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "part",
+      "id": "preview",
+      "x": 176,
+      "y": 18,
+      "part": "mcptoolkit:entity_preview",
+      "subject": "armor_stand",
+      "w": 36,
+      "h": 52,
+      "scale": 22,
+      "pitch": 25,
+      "yaw": 210,
+      "draggable": false
+    },
+    {
+      "kind": "part",
+      "id": "inputs",
+      "x": 216,
+      "y": 18,
+      "part": "mcptoolkit:station_inputs",
+      "container": "input",
+      "first": 2,
+      "hint": "minecraft:container/slot/smithing_template_netherite_upgrade"
+    },
+    {
+      "kind": "repeat",
+      "id": "arrows",
+      "x": 218,
+      "y": 40,
+      "count": 3,
+      "children": [
+        {
+          "kind": "button",
+          "id": "pick",
+          "x": 0,
+          "y": "$i * 18",
+          "w": 12,
+          "h": 16,
+          "text": "",
+          "action": "select",
+          "args": ["$i"],
+          "face": "none",
+          "sprite": "minecraft:widget/page_forward",
+          "sprite_hovered": "minecraft:widget/page_forward_highlighted"
+        }
+      ]
+    },
+    {
+      "kind": "icon",
+      "id": "crop",
+      "x": 176,
+      "y": 74,
+      "w": 16,
+      "h": 16,
+      "texture": "minecraft:textures/gui/container/inventory.png",
+      "u": 7,
+      "v": 83,
+      "src_w": 18,
+      "src_h": 18
+    },
+    {
+      "kind": "label",
+      "id": "hidden_note",
+      "x": 176,
+      "y": 94,
+      "w": 60,
+      "text": "never shown",
+      "mode": "truncated",
+      "visible": {
+        "binding": "progress",
+        "gt": 1000
+      }
+    },
+    {
+      "kind": "part",
+      "id": "inv",
+      "x": 8,
+      "y": 139,
+      "part": "mcptoolkit:player_inventory"
+    }
+  ]
+}

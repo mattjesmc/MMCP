@@ -1,0 +1,24 @@
+// A Minecraft 26.2 Fabric mod wired for the MCP Toolkit from its first launch. Rename the project,
+// the mod id in gradle.properties and fabric.mod.json, and the package under src/main/java.
+pluginManagement {
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        gradlePluginPortal()
+        mavenCentral()
+        // The MCP Toolkit's convention plugin (com.mattmc.mcmod) and its marker. Until the
+        // toolkit's static Maven is published (mcp-toolkit/README.md, first section), it resolves
+        // from mavenLocal: `gradlew build` in mcmodding/gradle-conventions publishes it there.
+        // Scoped, so a stale local copy of some OTHER plugin cannot shadow the real one.
+        mavenLocal {
+            content {
+                includeGroup 'com.mattmc.gradle'   // the convention plugin's jar
+                includeGroup 'com.mattmc.mcmod'    // its plugin marker (group == plugin id)
+            }
+        }
+    }
+}
+
+rootProject.name = 'examplemod'

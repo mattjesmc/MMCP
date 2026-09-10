@@ -1,0 +1,1231 @@
+[
+ {
+  "name": "get_project_info",
+  "description": "Orientation for the project this call resolves to: format, name, texture size, element and texture counts, top-level groups, bounds, save state, undo position and which session holds it. Free of JavaScript; call it first.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "project",
+  "description": "Project and session management. op:list every open tab with its holder; info (= get_project_info); new {name, format, texture_width, texture_height, bind} makes and binds (bind:false for a throwaway: created and made active, but it does NOT take the binding); open {path} loads a .bbmodel/.json and binds; select {project, take} binds this session (take:true takes it from another); save {path} writes the .bbmodel (path optional when it was saved before); close {force} (force closes unsaved); set {name, texture_width, texture_height, box_uv}. Every other tool acts on the bound project unless it names one.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "list",
+      "info",
+      "new",
+      "open",
+      "select",
+      "save",
+      "close",
+      "set"
+     ]
+    },
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "name": {
+     "type": "string"
+    },
+    "format": {
+     "type": "string",
+     "description": "Format id (Formats registry): java_block, modded_entity, free, bedrock, ..."
+    },
+    "path": {
+     "type": "string",
+     "description": "Absolute file path (open, save)."
+    },
+    "take": {
+     "type": "boolean"
+    },
+    "force": {
+     "type": "boolean"
+    },
+    "bind": {
+     "type": "boolean",
+     "description": "new: false creates without binding this session to it (a scratch project should not take the binding)."
+    },
+    "texture_width": {
+     "type": "integer"
+    },
+    "texture_height": {
+     "type": "integer"
+    },
+    "box_uv": {
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "list_outline",
+  "description": "The outliner tree. detail:\"names\" (default) gives names and types; \"boxes\" adds from/to/origin/rotation; \"faces\" adds each cube's face rectangles in texture pixels. group scopes to one bone; depth limits nesting. Duplicate names are reported with their uuids, since a name is the address every other tool takes.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "group": {
+     "type": "string"
+    },
+    "detail": {
+     "type": "string",
+     "enum": [
+      "names",
+      "boxes",
+      "faces"
+     ]
+    },
+    "depth": {
+     "type": "integer"
+    },
+    "cubes": {
+     "type": "boolean",
+     "description": "false lists groups only"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "find_elements_by_criteria",
+  "description": "Elements matching a name regex or substring, a type, a parent group, a size range. Returns name, type, group and box.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "name_pattern": {
+     "type": "string",
+     "description": "regex, case-sensitive"
+    },
+    "name_contains": {
+     "type": "string",
+     "description": "substring, case-insensitive"
+    },
+    "type": {
+     "type": "string",
+     "enum": [
+      "cube",
+      "group",
+      "any"
+     ]
+    },
+    "parent_group": {
+     "type": "string"
+    },
+    "min_size": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "max_size": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "limit": {
+     "type": "integer"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "get_selection",
+  "description": "What is selected in the editor: elements (name, type) and the selected texture.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "inspect",
+  "description": "Measurements the 3D view cannot show. op:bounds (whole model, a group or ids); faces (each cube's face rectangles in texture pixels); envelope (for each cube, its neighbours on the same bone and the gap per axis: air, touching or overlap); overlaps (every unrotated cube pair that interpenetrates, with depth); uv (face rectangles that collide on the sheet or fall outside it). Rotated cubes are measured by their unrotated box and said so; the entity plugin's check battery is the full arbiter. When it beats the edit reply: after a rework, for the cubes and faces you did not just touch (place_cube/modify_cube already report the ones they did).",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "bounds",
+      "faces",
+      "envelope",
+      "overlaps",
+      "uv"
+     ]
+    },
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "group": {
+     "type": "string"
+    },
+    "id": {
+     "type": "string"
+    },
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Element names or uuids."
+    },
+    "texture": {
+     "type": "string",
+     "description": "uv: one sheet (default all)"
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "place_cube",
+  "description": "Add cubes in one call (one undo entry). Each element: name, from, to, optional origin/rotation/inflate/mirror_uv/uv_offset. group puts them in a bone (default root); texture names the sheet (default the selected/first); uv \"auto\" (default) maps each face by Blockbench's auto-UV, \"box\" uses box UV at uv_offset, \"none\" leaves faces unmapped. The reply carries every cube's face rectangles and its envelope (neighbours on the same bone, gap per axis) so the next call needs no read.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "elements": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "from": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "to": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "origin": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "rotation": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "inflate": {
+        "type": "number"
+       },
+       "mirror_uv": {
+        "type": "boolean"
+       },
+       "uv_offset": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 2,
+        "maxItems": 2
+       },
+       "visibility": {
+        "type": "boolean"
+       }
+      },
+      "required": [
+       "from",
+       "to"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "group": {
+     "type": "string"
+    },
+    "texture": {
+     "type": "string"
+    },
+    "uv": {
+     "type": "string",
+     "enum": [
+      "auto",
+      "box",
+      "none"
+     ]
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "required": [
+    "elements"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "modify_cube",
+  "description": "Change one cube (id) or several (ids) in one undo entry: any of from, to, origin, rotation, inflate, mirror_uv, uv_offset, name, visibility. Faces are re-mapped when the cube has auto-UV. Replies with the readback: box, face rectangles, envelope.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "id": {
+     "type": "string"
+    },
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Element names or uuids."
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    },
+    "name": {
+     "type": "string"
+    },
+    "from": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "to": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "rotation": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "inflate": {
+     "type": "number"
+    },
+    "mirror_uv": {
+     "type": "boolean"
+    },
+    "uv_offset": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 2,
+     "maxItems": 2
+    },
+    "visibility": {
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "add_group",
+  "description": "Add a bone: name, origin (pivot), rotation, parent (default root). children moves existing elements into it. Replies with the group and its path.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "name": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "rotation": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "parent": {
+     "type": "string"
+    },
+    "children": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Element names or uuids."
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "element",
+  "description": "Element operations on one (id) or several (ids), one undo entry: op remove; rename {name}; duplicate (returns the copies' names); reparent {parent}; set {origin, rotation, visibility, name} on groups or cubes; select; show; hide.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "remove",
+      "rename",
+      "duplicate",
+      "reparent",
+      "set",
+      "select",
+      "show",
+      "hide"
+     ]
+    },
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "id": {
+     "type": "string"
+    },
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Element names or uuids."
+    },
+    "name": {
+     "type": "string"
+    },
+    "parent": {
+     "type": "string"
+    },
+    "origin": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "rotation": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "visibility": {
+     "type": "boolean"
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "create_texture",
+  "description": "Make a texture of a size that applies (width/height, default the project's UV size), filled with a colour or transparent, or loaded from a PNG path. assign \"blank\" (default) puts it on every face without one, \"all\" on every cube, \"none\" on nothing. Replies with the size actually made and the opaque count; get_texture shows it.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "name": {
+     "type": "string"
+    },
+    "width": {
+     "type": "integer"
+    },
+    "height": {
+     "type": "integer"
+    },
+    "fill": {
+     "description": "colour: \"#rrggbb\", \"#rrggbbaa\", [r,g,b,a] or a grey 0-255; null clears"
+    },
+    "path": {
+     "type": "string",
+     "description": "PNG to load instead of filling"
+    },
+    "assign": {
+     "type": "string",
+     "enum": [
+      "blank",
+      "all",
+      "none"
+     ]
+    }
+   },
+   "required": [
+    "name"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "apply_texture",
+  "description": "Put a texture on cubes (id/ids/group, default all): faces omitted means every face, else the named faces. null-faces stay unmapped.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "texture": {
+     "type": "string"
+    },
+    "id": {
+     "type": "string"
+    },
+    "ids": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Element names or uuids."
+    },
+    "group": {
+     "type": "string"
+    },
+    "faces": {
+     "type": "array",
+     "items": {
+      "type": "string",
+      "enum": [
+       "north",
+       "south",
+       "east",
+       "west",
+       "up",
+       "down"
+      ]
+     }
+    }
+   },
+   "required": [
+    "texture"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "list_textures",
+  "description": "Every texture: name, size, opaque pixel count, how many cubes use it, whether it is selected.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "get_texture",
+  "description": "A texture as a picture (never cropped: its pixel (x, y) is an address the next paint call names), with size and opaque count. region [x, y, w, h] returns that part.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "texture": {
+     "type": "string"
+    },
+    "region": {
+     "type": "array",
+     "items": {
+      "type": "integer"
+     },
+     "minItems": 4,
+     "maxItems": 4
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "texture",
+  "description": "Texture operations, one undo entry each. op:read {region | cube+face, palette?} returns the texels as rows of characters with a legend (the reading half of paint_ascii); rects {rects:[{x,y,w,h,c}]} fills or clears rectangles (c null clears); resize {width, height, mode:\"scale\"|\"pad\", project_uv} ; recolor {map:{\"#from\":\"#to\"}, region?}; flip {axis:\"x\"|\"y\"}; load {path} replaces the pixels from a PNG; write {path} saves a PNG; rename {name}; remove.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "read",
+      "rects",
+      "resize",
+      "recolor",
+      "flip",
+      "load",
+      "write",
+      "rename",
+      "remove"
+     ]
+    },
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "texture": {
+     "type": "string"
+    },
+    "region": {
+     "type": "array",
+     "items": {
+      "type": "integer"
+     },
+     "minItems": 4,
+     "maxItems": 4
+    },
+    "cube": {
+     "type": "string"
+    },
+    "face": {
+     "type": "string",
+     "enum": [
+      "north",
+      "south",
+      "east",
+      "west",
+      "up",
+      "down"
+     ]
+    },
+    "palette": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "rects": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "x": {
+        "type": "integer"
+       },
+       "y": {
+        "type": "integer"
+       },
+       "w": {
+        "type": "integer"
+       },
+       "h": {
+        "type": "integer"
+       },
+       "c": {
+        "description": "colour: \"#rrggbb\", \"#rrggbbaa\", [r,g,b,a] or a grey 0-255; null clears"
+       }
+      },
+      "required": [
+       "x",
+       "y",
+       "w",
+       "h"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "width": {
+     "type": "integer"
+    },
+    "height": {
+     "type": "integer"
+    },
+    "mode": {
+     "type": "string",
+     "enum": [
+      "scale",
+      "pad"
+     ]
+    },
+    "project_uv": {
+     "type": "boolean"
+    },
+    "map": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "axis": {
+     "type": "string",
+     "enum": [
+      "x",
+      "y"
+     ]
+    },
+    "path": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "paint_faces",
+  "description": "Paint whole FACES of cubes on a texture in one call, one undo entry. faces maps \"<cube>.<face>\" (north/south/east/west/up/down, or \"<cube>.*\") to a colour, a [top, bottom] pair shaded row by row, or null to clear. pixels maps \"x,y\" to a colour for the odd texel. Replies with every rectangle painted and its pixel count.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "texture": {
+     "type": "string"
+    },
+    "faces": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "pixels": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "paint_ascii",
+  "description": "Stamp ASCII art onto a texture, several stamps in one call and one undo entry. Each stamp names a region (at:[x,y], or cube+face) and rows of one character per texel looked up in palette (the stamp's, else the call's): space leaves the texel alone, \".\" clears it. fill paints the region first; tile repeats the rows; shift offsets them; shade_only paints only where a texel is already opaque (pins the silhouette).",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "texture": {
+     "type": "string"
+    },
+    "palette": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "stamps": {
+     "type": "array",
+     "minItems": 1,
+     "items": {
+      "type": "object",
+      "properties": {
+       "at": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 2,
+        "maxItems": 2
+       },
+       "cube": {
+        "type": "string"
+       },
+       "face": {
+        "type": "string",
+        "enum": [
+         "north",
+         "south",
+         "east",
+         "west",
+         "up",
+         "down"
+        ]
+       },
+       "rows": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       },
+       "fill": {
+        "description": "colour: \"#rrggbb\", \"#rrggbbaa\", [r,g,b,a] or a grey 0-255; null clears"
+       },
+       "tile": {
+        "type": "boolean"
+       },
+       "shift": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 2,
+        "maxItems": 2
+       },
+       "shade_only": {
+        "type": "boolean"
+       },
+       "palette": {
+        "type": "object",
+        "additionalProperties": true
+       }
+      },
+      "additionalProperties": false
+     }
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "required": [
+    "stamps"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "capture_screenshot",
+  "description": "The viewport as a picture. angle names a preset (initial, north, south, east, west, top, bottom, isometric_right, isometric_left, ...) or give position/target/projection; fit:true frames the whole model. views:[\"north\",\"east\",\"top\"] is the recommended look: each preset rendered into ONE contact sheet, one turn and one picture instead of a set_camera_angle per view (tile px each, default 512; ask the shim for max:768 or more to keep it legible). The camera is left where it was for a single capture with no angle, and restored after a sheet.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "angle": {
+     "type": "string"
+    },
+    "position": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "target": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "projection": {
+     "type": "string",
+     "enum": [
+      "perspective",
+      "orthographic"
+     ]
+    },
+    "fit": {
+     "type": "boolean"
+    },
+    "fit_margin": {
+     "type": "number"
+    },
+    "views": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "minItems": 1,
+     "maxItems": 6
+    },
+    "tile": {
+     "type": "integer"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "set_camera_angle",
+  "description": "Move the viewport camera: a preset (angle) or position/target/projection; fit:true frames the model. Returns the camera; add look:true for the picture.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "angle": {
+     "type": "string"
+    },
+    "position": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "target": {
+     "type": "array",
+     "items": {
+      "type": "number"
+     },
+     "minItems": 3,
+     "maxItems": 3
+    },
+    "projection": {
+     "type": "string",
+     "enum": [
+      "perspective",
+      "orthographic"
+     ]
+    },
+    "fit": {
+     "type": "boolean"
+    },
+    "fit_margin": {
+     "type": "number"
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "export_model",
+  "description": "Compile the project through a codec (default the format's own; \"project\" is the .bbmodel, \"modded_entity\" the Java, \"java_block\" the block model JSON) and return the text, or write it to path and return the size. list:true names the codecs.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "codec": {
+     "type": "string"
+    },
+    "path": {
+     "type": "string"
+    },
+    "options": {
+     "type": "object",
+     "additionalProperties": true
+    },
+    "list": {
+     "type": "boolean"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "undo",
+  "description": "Undo steps (default 1) in this project. Replies with the undo position and the last entry name.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "steps": {
+     "type": "integer"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "redo",
+  "description": "Redo steps (default 1) in this project.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "steps": {
+     "type": "integer"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "get_undo_stack",
+  "description": "The last entries of this project's undo history (default 20) and the current index.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "limit": {
+     "type": "integer"
+    }
+   },
+   "additionalProperties": false
+  },
+  "mechanism": "observe"
+ },
+ {
+  "name": "risky_eval",
+  "description": "Run JavaScript inside Blockbench, in the resolved project, and return its value (JSON). PROJECT is that project and GAME is this session's game bridge URL, both in scope: hand them to a plugin API (api.save(PROJECT), {bridge: GAME}) instead of letting the API read the global Project or a hardcoded port, and a call that resolved wrongly cannot write silently. An expression or statements; comments and console are fine; a returned Promise is awaited and a rejection is an error reply. The older plugins' globals are here and both take them: mcptoolkitPush({project: PROJECT, bridge: GAME}), mcptoolkitEntity({action, project: PROJECT, bridge: GAME}).",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "code": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "code"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "trigger_action",
+  "description": "Trigger a Blockbench action by its BarItems id (e.g. \"select_all\", \"delete\", \"screenshot_model\").",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "id"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ },
+ {
+  "name": "animation",
+  "description": "Keyframe animation (live-verified on a modded_entity rig 2026-09-07). op:list; create {name, length, loop:\"once\"|\"loop\"|\"hold\"}; remove {name}; select {name}; keyframes {name, bone, channel:\"rotation\"|\"position\"|\"scale\", keyframes:[{time, value:[x,y,z], interpolation?}]} adds keyframes (replace:true clears the channel first); time {seconds} scrubs the timeline so a capture shows that pose.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "op": {
+     "type": "string",
+     "enum": [
+      "list",
+      "create",
+      "remove",
+      "select",
+      "keyframes",
+      "time"
+     ]
+    },
+    "project": {
+     "type": "string",
+     "description": "Project name or uuid. Omit for the project this session is bound to (or the active tab, reported as bound:false)."
+    },
+    "name": {
+     "type": "string"
+    },
+    "length": {
+     "type": "number"
+    },
+    "loop": {
+     "type": "string",
+     "enum": [
+      "once",
+      "loop",
+      "hold"
+     ]
+    },
+    "bone": {
+     "type": "string"
+    },
+    "channel": {
+     "type": "string",
+     "enum": [
+      "rotation",
+      "position",
+      "scale"
+     ]
+    },
+    "keyframes": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "time": {
+        "type": "number"
+       },
+       "value": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "minItems": 3,
+        "maxItems": 3
+       },
+       "interpolation": {
+        "type": "string",
+        "enum": [
+         "linear",
+         "catmullrom",
+         "step",
+         "bezier"
+        ]
+       }
+      },
+      "required": [
+       "time",
+       "value"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "replace": {
+     "type": "boolean"
+    },
+    "seconds": {
+     "type": "number"
+    },
+    "look": {
+     "type": "boolean",
+     "description": "Also return the viewport picture on this reply (a turn saved per look)."
+    }
+   },
+   "required": [
+    "op"
+   ],
+   "additionalProperties": false
+  },
+  "mechanism": "blockbench_edit"
+ }
+]

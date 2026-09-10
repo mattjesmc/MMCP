@@ -1,0 +1,33 @@
+package com.mattmc.mcui.menu;
+
+import net.fabricmc.fabric.api.menu.v1.ExtendedMenuProvider;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.Entity;
+
+/**
+ * The server half of {@link EntityMenus}: an entity that opens a menu fronting itself.
+ *
+ * <p>All it removes is the one line every such entity writes identically - "the screen-opening data
+ * is my own entity id" - but that line is the other end of {@link EntityMenus#of}'s contract, and
+ * having the two halves name each other is what stops a future implementation from sending, say, a
+ * {@code BlockPos} and leaving the client factory resolving a nonsense id.
+ *
+ * <pre>{@code
+ * public class RocketEntity extends VehicleEntity implements EntityMenuHost {
+ *     // getScreenOpeningData is inherited; createMenu and getDisplayName stay yours.
+ * }
+ * }</pre>
+ */
+public interface EntityMenuHost extends ExtendedMenuProvider<Integer> {
+    /**
+     * This entity's id: enough for the opening client to find its own copy.
+     *
+     * <p>The cast is safe by construction - only an {@link Entity} can be the subject of an
+     * entity-fronted menu - and is what lets this be a default method rather than a base class,
+     * which matters because implementors already extend a vanilla entity class.
+     */
+    @Override
+    default Integer getScreenOpeningData(final ServerPlayer player) {
+        return ((Entity) this).getId();
+    }
+}

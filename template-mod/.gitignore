@@ -1,0 +1,7 @@
+/.gradle/
+/build/
+/run*/
+/.mcptoolkit/mcp-server/
+/.mcptoolkit/runs/
+*.iml
+/.idea/

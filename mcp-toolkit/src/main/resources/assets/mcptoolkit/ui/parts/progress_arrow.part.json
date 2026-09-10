@@ -1,0 +1,36 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "binding",
+      "type": "binding"
+    },
+    {
+      "name": "w",
+      "type": "int",
+      "default": 24
+    },
+    {
+      "name": "h",
+      "type": "int",
+      "default": 8
+    },
+    {
+      "name": "orientation",
+      "type": "string",
+      "default": "horizontal"
+    }
+  ],
+  "elements": [
+    {
+      "kind": "bar",
+      "id": "fill",
+      "x": 0,
+      "y": 0,
+      "w": "$w",
+      "h": "$h",
+      "binding": "$binding",
+      "orientation": "$orientation"
+    }
+  ]
+}

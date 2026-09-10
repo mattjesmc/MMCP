@@ -1,0 +1,32 @@
+{
+  "date": "2026-08-17T11:57:45.621Z",
+  "kind": "measurement",
+  "subject": "place_shapes",
+  "owed_by": "mcp-toolkit/docs/world/STRUCTURE_AUTHORING_DESIGN.md §4",
+  "model": "haiku",
+  "model_id": "claude-haiku-4-5-20251001",
+  "seeds": 3,
+  "arms": [
+    "single",
+    "batch"
+  ],
+  "arm_tools": {
+    "single": [
+      "place_shape",
+      "get_blocks_at",
+      "describe_box",
+      "undo_edit"
+    ],
+    "batch": [
+      "place_shape",
+      "place_shapes",
+      "get_blocks_at",
+      "describe_box",
+      "undo_edit"
+    ]
+  },
+  "shapes_minimum": 8,
+  "questions_hash": "4c5a7057c81a",
+  "git_head": "da4d6b4",
+  "note": "NOT a bench rung — deliberately outside testbench-results/ and registry.mjs so it cannot pool with the frozen bench corpus."
+}

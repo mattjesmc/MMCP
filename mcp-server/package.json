@@ -1,0 +1,26 @@
+{
+  "name": "mcp-toolkit-server",
+  "version": "0.73.0",
+  "description": "MCP server that drives an in-game MCP Toolkit bridge, exposing whatever tools the mod registers via its localhost /tools manifest.",
+  "type": "module",
+  "bin": {
+    "mcp-toolkit": "index.mjs"
+  },
+  "scripts": {
+    "test": "node --test \"memory/probes/*.test.mjs\"",
+    "test:ablation": "node --test \"ablation/*.test.mjs\"",
+    "test:live": "node --test \"probes/*.test.mjs\"",
+    "routes": "node memory/routes-cli.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.215",
+    "@anthropic-ai/sdk": "^0.112.3"
+  }
+}

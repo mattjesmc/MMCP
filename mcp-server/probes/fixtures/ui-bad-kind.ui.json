@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "title": "Bad",
+  "width": 176,
+  "height": 166,
+  "elements": [
+    {
+      "kind": "gauge",
+      "id": "g",
+      "x": 0,
+      "y": 0,
+      "w": 10,
+      "h": 10
+    }
+  ]
+}

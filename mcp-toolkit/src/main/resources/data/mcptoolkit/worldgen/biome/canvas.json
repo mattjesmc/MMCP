@@ -1,0 +1,14 @@
+{
+  "_comment": "The canvas biome exists to provide NO environment attributes. EnvironmentAttributeSystem.addBiomeLayer installs a positional layer for every attribute ANY loaded biome provides, applied on top of the dimension's constant layer - so a canvas that borrowed minecraft:plains would wear plains' fog colour and the dimension_type's would never be seen. An empty `attributes` means every lookup falls through to the dimension's own. `effects` is still required by the codec; water_color is its only mandatory field and nothing here is ever wet.",
+  "has_precipitation": false,
+  "temperature": 0.8,
+  "downfall": 0.0,
+  "attributes": {},
+  "effects": {
+    "water_color": "#3F76E4"
+  },
+  "carvers": [],
+  "features": [],
+  "spawners": {},
+  "spawn_costs": {}
+}

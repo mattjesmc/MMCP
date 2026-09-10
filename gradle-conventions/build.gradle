@@ -1,0 +1,45 @@
+// The shared Minecraft-mod build conventions for this workspace: ONE place that decides the
+// Minecraft/loader/Fabric-API versions, the Java level, the repositories, and how an optional
+// mcp-toolkit dependency is probed for. Before this existed those facts were copy-pasted across
+// five build roots, so a Minecraft bump meant editing ten files and a missed one failed late.
+//
+// Deliberately NOT a subproject of any mod, and deliberately not `apply from:` a sibling path:
+// consumers resolve it as a plugin from mavenLocal, the same way they resolve mcp-toolkit.
+plugins {
+    id 'groovy-gradle-plugin'
+    id 'maven-publish'
+}
+
+group = 'com.mattmc.gradle'
+// Bump when the conventions change in a way consumers must opt into. Consumers pin this in their
+// settings.gradle plugins block, so a bump is visible and per-repo rather than silent and global.
+// 0.5.1 = generateUi/checkUi refuse with a sentence when the pinned toolkit predates the emitter (0.115.0),
+//         and exist-but-fail when screen authoring is opted in but unusable; toolkitStatus read the
+//         task's ext instead of the project's and crashed.
+version = '0.7.0'
+
+repositories {
+    gradlePluginPortal()
+    mavenCentral()
+}
+
+// No java toolchain here on purpose: a precompiled script plugin is loaded BY Gradle, so it must be
+// class-compatible with the JVM Gradle itself runs on, not with the JVM the mods target.
+
+// Same ergonomics as mcp-toolkit: building it publishes it, so there is no separate step to forget.
+tasks.named('build') { finalizedBy tasks.named('publishToMavenLocal') }
+
+// F8: the same static Maven the toolkit publishes to (mcp-toolkit/build.gradle) - the plugin jar
+// and its marker land in the one directory a consumer's settings.gradle names by URL.
+//   gradlew publishAllPublicationsToStaticRepository -Pmaven_repo=<checkout of the maven branch>
+publishing {
+    repositories {
+        def staticRepo = project.findProperty('maven_repo')
+        if (staticRepo) {
+            maven {
+                name = 'static'
+                url = file(staticRepo.toString()).toURI()
+            }
+        }
+    }
+}

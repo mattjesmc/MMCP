@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "subject",
+      "type": "string",
+      "default": "player"
+    },
+    {
+      "name": "w",
+      "type": "int",
+      "default": 40
+    },
+    {
+      "name": "h",
+      "type": "int",
+      "default": 60
+    },
+    {
+      "name": "scale",
+      "type": "number",
+      "default": 25
+    },
+    {
+      "name": "pitch",
+      "type": "number",
+      "default": 0
+    },
+    {
+      "name": "yaw",
+      "type": "number",
+      "default": 0
+    },
+    {
+      "name": "draggable",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "elements": [
+    {
+      "kind": "well",
+      "id": "back",
+      "x": 0,
+      "y": 0,
+      "w": "$w",
+      "h": "$h"
+    },
+    {
+      "kind": "entity",
+      "id": "subject",
+      "x": 1,
+      "y": 1,
+      "w": "$w - 2",
+      "h": "$h - 2",
+      "subject": "$subject",
+      "scale": "$scale",
+      "pitch": "$pitch",
+      "yaw": "$yaw",
+      "draggable": "$draggable"
+    }
+  ]
+}

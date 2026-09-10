@@ -1,0 +1,117 @@
+MMCP / MCP Toolkit License
+Copyright (c) 2026 mattjes
+
+All rights are reserved except those expressly granted below. The Software is the
+contents of this repository, including the mod jar built from it and the MCP server
+distributed with it.
+
+The official source and the official builds are at:
+
+    https://github.com/mattjesmc/MMCP
+
+Two words are used below with a specific meaning.
+
+    NON-COMMERCIAL use is use by an individual, or by a group of individuals, that
+    is not directed toward payment or commercial advantage: playing, learning,
+    teaching, research, hobby modding, and building things you give away.
+
+    COMMERCIAL use is anything else. In particular it includes use by or on behalf
+    of a business or other organisation; use in producing, developing or supporting
+    anything you sell, license, or offer for payment; use in a paid service, a paid
+    course, or work you are paid to do; and use funded by advertising, sponsorship
+    or subscription revenue that the use contributes to.
+
+If your situation does not obviously fall on one side, it is a question and not a
+verdict — see section 2.
+
+1. NON-COMMERCIAL USE — granted to anyone.
+
+   You may download, install, run and use the Software for any non-commercial
+   purpose, with no fee and with no obligation to ask. Within that use, anything you
+   author is entirely yours: this license places no condition on the mods, assets,
+   data or worlds you make while using the Software, and no claim on them.
+
+2. COMMERCIAL USE — not granted; ask.
+
+   Commercial use requires written permission from the copyright holder. Ask, and
+   say what you want to do. This is a door, not a wall: it exists so that the author
+   knows who is building on this and on what terms, not to stop anyone working.
+
+   Ask before you start, not after. Permission, once given, is given in writing and
+   says what it covers.
+
+3. SOURCE AND MODIFICATION — granted.
+
+   You may read the source, keep copies of it, fork the repository, and modify the
+   Software as much as you like for your own non-commercial use.
+
+4. DISTRIBUTION OF A MODIFIED VERSION — granted when it adds something.
+
+   You may distribute a modified version of the Software, publicly or privately, if
+   all of the following hold:
+
+   a. It adds substantial new functionality — capability the Software does not
+      already provide, such that a person would choose your version for something it
+      does and the Software does not. Rebuilding it, renaming it, bumping its
+      version, re-hosting it, translating its documentation, changing its
+      configuration, or making cosmetic or trivial edits is NOT adding
+      functionality, and a version so changed is covered by section 5, not this one.
+
+   b. It is clearly identified as a modified version and not as the Software itself,
+      by a name that will not be mistaken for it.
+
+   c. It carries this license, this copyright notice, and a visible link to the
+      official repository named above.
+
+   d. It is distributed non-commercially, and free of charge. A modified version is
+      still this Software; sections 1 and 2 travel with it, and so do these terms
+      for everyone who receives it.
+
+   If you are unsure whether your change clears (a), ask. Permission is usually
+   given, and asking costs less than guessing.
+
+5. REDISTRIBUTION OF THE SOFTWARE ITSELF — not granted.
+
+   You may not distribute the Software, or a build of it, to anyone else. In
+   particular, and without limiting that sentence, you may not upload the mod jar or
+   the MCP server to a mod-hosting site, a mirror, a file host, a package registry,
+   an archive, a modpack, or any other place a person could obtain it from you
+   instead of from the official repository — whether or not you charge for it, and
+   whether or not you say where it came from.
+
+   This is the thing this license is most concerned with. The Software is free for
+   the people it is for, and always will be; it is simply distributed from one
+   place, so that what a person downloads is what was actually released, at the
+   version it claims to be, with the documentation that describes it.
+
+   If you want people to have it, link them here.
+
+6. BUNDLING WITH YOUR OWN WORK — ask first.
+
+   If your project needs to ship the Software alongside it or inside it — a mod that
+   embeds it, a modpack, a distribution, a container image, a course or a workshop
+   handing it out — write and ask. This is not a refusal; it is a request to be told,
+   so that the thing people receive can be a build that still exists and still works.
+
+7. NAME.
+
+   "MMCP" and "MCP Toolkit" name this project. Do not use either as the name of a
+   fork or of a distribution you publish, in a way likely to suggest it is this
+   project or endorsed by it. Saying accurately that your work is built with, for, or
+   derived from it is fine and always allowed.
+
+8. NO WARRANTY.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE
+   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF
+   CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+9. NOT A MOJANG PRODUCT.
+
+   This project is not an official Minecraft product. It is not approved by or
+   associated with Mojang or Microsoft. Minecraft is a trademark of Mojang Synergies
+   AB. Your use of Minecraft remains governed by Mojang's own terms, which this
+   license neither grants nor alters.

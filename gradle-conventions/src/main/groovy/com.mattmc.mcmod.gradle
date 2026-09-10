@@ -1,0 +1,646 @@
+// com.mattmc.mcmod - shared conventions for every Fabric mod in this workspace.
+//
+// Apply AFTER Fabric Loom, because this script configures things Loom creates (the `minecraft`
+// configuration, the java extension):
+//
+//     plugins {
+//         id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+//         id 'com.mattmc.mcmod' version '0.1.0'
+//     }
+//
+// What stays the mod's own business: applying Loom, splitEnvironmentSourceSets(), run configs and
+// runDirs, mod identity (version/group/archivesName), and any dependency beyond Minecraft+loader.
+
+// ---------------------------------------------------------------------------
+// Versions. THIS is the master environment: the defaults below are the workspace's answer, and a
+// Minecraft bump is this file plus a republish. A repo that must pin something different sets the
+// matching gradle.properties key and wins - so pinning stays possible, but drifting takes effort.
+// ---------------------------------------------------------------------------
+// Held as locals as well as ext: inside a java{} or dependencies{} closure, a bare `ext` resolves
+// against THAT closure's delegate, not the project, so the ext form fails there.
+def minecraftVersion  = project.findProperty('minecraft_version')  ?: '26.2'
+def loaderVersion     = project.findProperty('loader_version')     ?: '0.19.3'
+def fabricApiVersion  = project.findProperty('fabric_version')     ?: '0.152.0+26.2'
+def mcptoolkitVersion = project.findProperty('mcptoolkit_version') ?: '0.128.0'
+// Minecraft 26.2 requires Java 25.
+def javaRelease = 25
+
+// ...and published to consumers, which read them as plain names (e.g. `fabricApiVersion`).
+ext.minecraftVersion  = minecraftVersion
+ext.loaderVersion     = loaderVersion
+ext.fabricApiVersion  = fabricApiVersion
+ext.mcptoolkitVersion = mcptoolkitVersion
+ext.javaRelease       = javaRelease
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'Fabric'
+        url = 'https://maven.fabricmc.net/'
+    }
+    // This workspace's OWN groups only. An unfiltered mavenLocal() lets a stale locally-installed
+    // copy of any dependency shadow the real one, which is a quiet way to build against the wrong
+    // thing. Each entry is a build root here that publishes to mavenLocal on `build`.
+    mavenLocal {
+        content {
+            includeGroup 'com.mattmc.mcptoolkit'   // ../mcp-toolkit  - the dev agent bridge
+        }
+    }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaRelease)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    it.options.release = javaRelease
+    it.options.encoding = 'UTF-8'
+}
+
+dependencies {
+    // Minecraft 26.1+ ships unobfuscated: no `mappings` dependency at all, and no remapping, so
+    // plain `implementation` rather than the old `modImplementation`.
+    minecraft "com.mojang:minecraft:${minecraftVersion}"
+    implementation "net.fabricmc:fabric-loader:${loaderVersion}"
+}
+
+// fabric.mod.json carries ${version}; expand it from the mod's own version. Read lazily - the mod
+// sets `version` in its build.gradle, which may run after this plugin is applied.
+tasks.named('processResources') {
+    inputs.property('version', providers.provider { project.version.toString() })
+    filesMatching('fabric.mod.json') {
+        expand version: project.version.toString()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The optional mcp-toolkit dev bridge.
+//
+// Gradle has no "resolve only if present", so an optional dependency must be PROBED for before it
+// is declared - otherwise an absent artifact fails resolution instead of degrading. An absent
+// toolkit is a valid state: it means a plain vanilla dev run.
+// ---------------------------------------------------------------------------
+def m2Root = file(System.getProperty('maven.repo.local') ?: "${System.getProperty('user.home')}/.m2/repository")
+def toolkitDir = new File(m2Root, 'com/mattmc/mcptoolkit/mcp-toolkit')
+def toolkitJar = new File(toolkitDir, "${mcptoolkitVersion}/mcp-toolkit-${mcptoolkitVersion}.jar")
+
+// mcp-toolkit itself applies these conventions, and must not depend on itself. Any project can opt
+// out with `mcmod.toolkit=false` in gradle.properties; it then still gets versions, Java level and
+// repositories, just no bridge dependency. Read as a property because plugin application happens
+// before the consumer's build script body runs, so a build-script flag would be too late.
+def wantsToolkit = (project.findProperty('mcmod.toolkit') ?: 'true').toString() != 'false'
+def toolkitAvailable = wantsToolkit && toolkitJar.exists()
+def missingWhy = { ->
+    def have = (toolkitDir.listFiles() ?: new File[0]).findAll { it.directory }*.name.sort()
+    "mcp-toolkit ${mcptoolkitVersion} is NOT in your local maven repo" +
+        (have ? " (installed there: ${have.join(', ')})" : " (none installed)") +
+        ". Fix: ./gradlew build in the mcmodding/mcp-toolkit checkout, or set mcptoolkit_version" +
+        " in gradle.properties to a version you have."
+}
+
+ext.toolkitAvailable = toolkitAvailable
+ext.toolkitJar = toolkitJar
+ext.toolkitMissingWhy = missingWhy
+
+// `implementation`, not `compileOnly`: it also puts the bridge on the dev RUNTIME classpath, which
+// is how a dev run in this workspace gets an MCP game at all.
+if (toolkitAvailable) {
+    dependencies {
+        implementation "com.mattmc.mcptoolkit:mcp-toolkit:${mcptoolkitVersion}"
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The bridge port, and why it is declared here rather than left to a default.
+//
+// The workspace knew two cases and this is the third. GAME FIRST, the game publishes the port it
+// actually bound; SESSION FIRST, the session pushes the port it froze. But a project's own dev loop
+// is NEITHER END MOVING - menagerie's game and menagerie's session both want one fixed number,
+// forever. Nothing declared it, so both ends fell back to BridgeConfig's dev default independently
+// and happened to agree on 25599. That works for exactly one project at a time, and the second one
+// fails in the worst possible direction: BridgeServer retries the bind for 90 seconds, gives up with
+// a single WARN, and that project's session - dialing the same 25599 - connects to the FIRST game
+// and works perfectly against the wrong world.
+//
+// So the port is a PROJECT CONSTANT: `mcmod.port` in gradle.properties, read by both ends. This
+// wiring puts it on the game; the same number goes in the repo's .mcp.json as MCPTK_URL. `-Pport=<n>`
+// stays the transient override (a probe server booted beside a live game) and outranks it. With
+// neither set the game keeps the dev default, so a single-project workspace needs no ceremony.
+//
+// THE ALLOCATION, which lives here because this is the one file every root reads:
+//     25599  mcp-toolkit's own dev client   (BridgeConfig.DEV_DEFAULT_PORT; declares no mcmod.port)
+//     25600  production default             (BridgeConfig.PRODUCTION_DEFAULT_PORT)
+//     25601  wmserve policy sidecar
+//     25610  mcp-toolkit's ../run-server
+//     2562x  throwaway probe servers        (-Pport=25620/25621/25630/25631 in the probe records)
+//     25640  villagejobs   (a sibling checkout since 2026-09-06; was the mcmodding root)
+//     25641  menagerie
+//     25642  rocketeer
+//     25643  nijntje
+//     25644  redstonic     (RedstonicEngineer)  -- AND herbarium, which is a real collision: run
+//                                                  both dev games at once and the second one's
+//                                                  session drives the first one's world.
+//     25645  watercraft
+//     25646  arboretum
+//     2569x  reserved by tools/probes       (rebuild-lock, launch-guard: 25697-25699)
+//     25801- BLOCKBENCH WINDOWS, one per window, taken by the plugin in order from the base
+//      25816 (mcp-toolkit/blockbench/mcptoolkit_bridge.js; BLOCKBENCH_ISOLATION_DESIGN.md §6.3).
+//            NOT a game bridge port and not allocable to a project: a shim SCANS this whole range
+//            to find the window it will work in, so anything else living in it gets asked `GET
+//            /hello` by every session on the machine. The shim refuses what does not answer
+//            `app: "blockbench"`, which is the guard, not a reason to put something here.
+// ---------------------------------------------------------------------------
+def bridgePort = project.findProperty('port') ?: project.findProperty('mcmod.port')
+ext.bridgePort = bridgePort
+
+if (toolkitAvailable) {
+    // configureEach, NOT `runs { client { ... } }`: nijntje declares no runs block at all and takes
+    // Loom's defaults, so naming the configurations would reach the mods that already list them and
+    // silently miss the ones that do not.
+    loom.runs.configureEach { run ->
+        // hotswap_class self-attaches a java agent for Instrumentation and the JVM refuses
+        // self-attach without this. It is a property of the toolkit being on the RUNTIME classpath,
+        // not of the toolkit's own build file, which is the only place it used to be set - so
+        // hotswap_class was quietly unavailable in every consumer's game.
+        run.vmArg '-Djdk.attach.allowAttachSelf=true'
+        if (bridgePort) {
+            run.vmArg "-Dmcptoolkit.port=${bridgePort}"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Screen authoring: generateUi / checkUi (mcp-toolkit/docs/screens/SCREEN_AUTHORING_DESIGN.md section 7.1).
+//
+// A mod's screens are documents (src/main/resources/assets/<mod>/ui/<screen>.ui.json) that the
+// toolkit's emitter compiles into plain vanilla-API Java the mod ships - a machine-owned base class
+// per screen, a human stub written once, and one vendored <Mod>Ui per mod. The generated files are
+// CHECKED IN and the mod compiles with this plugin absent; nothing here is a build-time dependency
+// smuggled back in. What this wiring adds is the staleness guarantee: `checkUi` runs under `check`
+// and fails the build when a checked-in machine file no longer matches its document.
+//
+// The emitter runs from the toolkit jar in a separate JVM (JavaExec on the mod's Java toolchain):
+// the toolkit is compiled for the mod's Java level, not Gradle's, and its ui.doc/ui.emit packages
+// import no Minecraft, so the jar plus Gson is the whole classpath. It is the SAME emitter the dev
+// game runs in-process from the editor's save - one emitter, by construction.
+//
+// Opt in with `mcmod.ui.package=<the mod's root package>` in gradle.properties. The mod id is read
+// from the one assets/<id>/ui directory, or set `mcmod.ui.mod` when there is more than one.
+// ---------------------------------------------------------------------------
+def uiPackage = project.findProperty('mcmod.ui.package')?.toString()
+def uiAssets = file('src/main/resources/assets')
+def uiMod = project.findProperty('mcmod.ui.mod')?.toString()
+if (!uiMod && uiAssets.isDirectory()) {
+    def candidates = (uiAssets.listFiles() ?: new File[0]).findAll { new File(it, 'ui').isDirectory() }*.name
+    if (candidates.size() == 1) uiMod = candidates[0]
+}
+// The emitter arrived in mcp-toolkit 0.115.0, and this plugin's default toolkit is older than
+// that. The first consumer-side run (villagejobs, 2026-09-03) launched UiGenerate against 0.85.0
+// and got a bare ClassNotFoundException; the jar is read here so the answer is a sentence.
+def uiEmitterPresent = toolkitAvailable && {
+    def zf = new java.util.zip.ZipFile(toolkitJar)
+    try { zf.getEntry('com/mattmc/mcptoolkit/ui/emit/UiGenerate.class') != null } finally { zf.close() }
+}()
+def uiWhy
+if (!uiPackage) {
+    uiWhy = 'not enabled (set mcmod.ui.package in gradle.properties)'
+} else if (!toolkitAvailable) {
+    uiWhy = 'mcmod.ui.package is set but the toolkit is not available - ' + missingWhy()
+} else if (!uiEmitterPresent) {
+    uiWhy = "mcmod.ui.package is set but mcp-toolkit ${mcptoolkitVersion} has no screen emitter (ui/emit arrived in 0.115.0); set mcptoolkit_version=0.115.0 or newer in gradle.properties"
+} else if (!uiMod) {
+    uiWhy = "mcmod.ui.package is set but no single assets/<mod>/ui directory was found under ${uiAssets}; set mcmod.ui.mod"
+} else {
+    uiWhy = "documents in assets/${uiMod}/ui, generated into ${uiPackage}.menu / .client"
+}
+ext.uiAvailable = (uiPackage && uiEmitterPresent && uiMod) as boolean
+ext.uiWhy = uiWhy
+
+if (uiPackage && !ext.uiAvailable) {
+    // Opted in but unusable: the tasks exist and say why, rather than "task not found".
+    ['generateUi', 'checkUi'].each { name ->
+        tasks.register(name) {
+            group = name == 'checkUi' ? 'verification' : 'build'
+            description = "Screen authoring is opted in but not usable here: ${uiWhy}"
+            doLast { throw new GradleException("screen authoring: ${uiWhy}") }
+        }
+    }
+}
+
+if (ext.uiAvailable) {
+    def uiDocs = new File(uiAssets, "${uiMod}/ui")
+    def uiCommon = file('src/main/java')
+    // Loom's split source sets put client code in src/client/java; a mod that does not split keeps
+    // everything in main. Generated client files follow whichever the mod does.
+    def uiClient = file('src/client/java').isDirectory() ? file('src/client/java') : uiCommon
+    def uiGson = configurations.detachedConfiguration(dependencies.create('com.google.code.gson:gson:2.11.0'))
+    def uiArgs = { List extra ->
+        ['--mod', uiMod, '--package', uiPackage, '--docs', uiDocs.absolutePath,
+         '--common', uiCommon.absolutePath, '--client', uiClient.absolutePath] + extra
+    }
+    def uiLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(javaRelease) }
+
+    tasks.register('generateUi', JavaExec) {
+        group = 'build'
+        description = "Compile assets/${uiMod}/ui/*.ui.json into ${uiPackage}.menu and .client (stubs written once, machine files always)."
+        classpath = files(toolkitJar) + uiGson
+        mainClass = 'com.mattmc.mcptoolkit.ui.emit.UiGenerate'
+        javaLauncher = uiLauncher
+        args = uiArgs([])
+        outputs.upToDateWhen { false }
+    }
+
+    tasks.register('checkUi', JavaExec) {
+        group = 'verification'
+        description = 'Fail if a generated screen file is out of date with its document, or a stub is missing.'
+        classpath = files(toolkitJar) + uiGson
+        mainClass = 'com.mattmc.mcptoolkit.ui.emit.UiGenerate'
+        javaLauncher = uiLauncher
+        args = uiArgs(['--check'])
+        inputs.dir(uiDocs)
+        inputs.file(toolkitJar)
+        inputs.files(fileTree(uiCommon) { include '**/*MenuBase.java' })
+        inputs.files(fileTree(uiClient) { include '**/*Layout.java', '**/*Ui.java' })
+        outputs.upToDateWhen { true }
+    }
+
+    if ((project.findProperty('mcmod.ui.check') ?: 'true').toString() != 'false') {
+        plugins.withId('java') {
+            tasks.named('check') { dependsOn 'checkUi' }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Scaffold and checkAssets (RELEASE_1.md section J1 / J2, mcp-toolkit 0.127.0).
+//
+//   gradlew scaffold -Pkind=block|item -Pid=<id> [-Pbehaviour] [-Pscaffold.name="Display Name"] [-Ppackage=<pkg>]
+//   (a NAMESPACED key for the display name, because Gradle's Project answers `name` AND `displayName`
+//   itself: -Pname=X reads back as the project's name and -PdisplayName=X as "root project 'x'" -
+//   both found by the recorded run into nijntje, 2026-09-06)
+//   gradlew checkAssets           (also under `check`)
+//
+// Both run from the toolkit jar in a separate JVM, exactly as generateUi does: the scaffold and
+// checker packages import no Minecraft, so the jar plus Gson is the whole classpath. Zero manifest
+// cost - neither is a tool, and the scaffold could not be one: it runs BEFORE any session exists
+// (a registration is structural; one rebuild follows it).
+//
+// The scaffold runs ONCE and never regenerates - a file it would write that exists is left as it
+// is, and a second run on the same id is refused. The mod id and the root package come from
+// fabric.mod.json (its `id`, and the package of its `main` entrypoint) unless -Pmod / -Ppackage say
+// otherwise; a NeoForge-only repository sets both.
+//
+// checkAssets resolves `minecraft:` references against the Loom merged jar when it finds one under
+// .gradle/loom-cache; without it they are COUNTED as unchecked, never silently passed. Dangling
+// references fail the build; unused assets warn. `mcmod.assets.check=false` unhooks it from
+// `check`.
+// ---------------------------------------------------------------------------
+def scaffoldPresent = toolkitAvailable && {
+    def zf = new java.util.zip.ZipFile(toolkitJar)
+    try { zf.getEntry('com/mattmc/mcptoolkit/scaffold/Scaffold.class') != null } finally { zf.close() }
+}()
+def scaffoldWhy = !toolkitAvailable ? ('the toolkit is not available - ' + missingWhy())
+    : !scaffoldPresent ? "mcp-toolkit ${mcptoolkitVersion} has no scaffold (it arrived in 0.127.0); set mcptoolkit_version=0.127.0 or newer in gradle.properties"
+    : 'available'
+def scaffoldGson = configurations.detachedConfiguration(dependencies.create('com.google.code.gson:gson:2.11.0'))
+// toolkitInit reuses the toolkit's own McpServersFile, whose one logger is slf4j's; -nop keeps the
+// separate JVM quiet rather than printing the "no providers" banner on every run.
+def scaffoldSlf4j = configurations.detachedConfiguration(dependencies.create('org.slf4j:slf4j-nop:2.0.16'))
+def scaffoldLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(javaRelease) }
+def modResources = file('src/main/resources')
+def fabricModJson = new File(modResources, 'fabric.mod.json')
+// The mod's identity, from its own manifest. Read lazily: a repository without fabric.mod.json
+// (NeoForge-only) is a valid state and only the scaffold needs the answer.
+def modMeta = { ->
+    def out = [id: project.findProperty('mod')?.toString(), pkg: project.findProperty('package')?.toString(), entrypoint: null]
+    if (fabricModJson.isFile()) {
+        def json = new groovy.json.JsonSlurper().parse(fabricModJson)
+        if (!out.id) out.id = json.id?.toString()
+        def mains = json.entrypoints?.main
+        def main = (mains instanceof List && mains) ? mains[0] : null
+        def cls = main instanceof Map ? main.value?.toString() : main?.toString()
+        if (cls) {
+            out.entrypoint = cls
+            if (!out.pkg && cls.contains('.')) out.pkg = cls.substring(0, cls.lastIndexOf('.'))
+        }
+    }
+    if (!out.pkg) out.pkg = project.findProperty('mcmod.ui.package')?.toString()
+    return out
+}
+// Loom keeps ONE merged jar for a plain mod and a common + clientOnly PAIR for a mod with split
+// source sets (nijntje, rocketeer); assets live in the client half and data in the common half,
+// so the checker gets both. Newest of each, because a Loom upgrade leaves the old pair behind.
+def vanillaJars = { ->
+    def cache = new File(projectDir, '.gradle/loom-cache/minecraftMaven/net/minecraft')
+    if (!cache.isDirectory()) return []
+    def newest = { String prefix ->
+        def jars = []
+        cache.eachDirMatch(~/${prefix}-.*/) { d ->
+            def v = new File(d, minecraftVersion)
+            if (v.isDirectory()) v.eachFileMatch(~/.*\.jar/) { jars << it }
+        }
+        jars ? jars.max { it.lastModified() } : null
+    }
+    def merged = newest('minecraft-merged')
+    if (merged) return [merged]
+    return [newest('minecraft-common'), newest('minecraft-clientOnly')].findAll { it }
+}
+
+if (!scaffoldPresent) {
+    ['scaffold', 'checkAssets', 'toolkitInit'].each { name ->
+        tasks.register(name) {
+            group = name == 'checkAssets' ? 'verification' : 'build'
+            description = "Not usable here: ${scaffoldWhy}"
+            doLast { throw new GradleException("${name}: ${scaffoldWhy}") }
+        }
+    }
+} else {
+    tasks.register('scaffold', JavaExec) {
+        group = 'build'
+        description = 'A block or item into this source tree, once: -Pkind=block|item -Pid=<id> [-Pbehaviour] [-Pscaffold.name=..] [-Ppackage=..].'
+        classpath = files(toolkitJar) + scaffoldGson
+        mainClass = 'com.mattmc.mcptoolkit.scaffold.Scaffold'
+        javaLauncher = scaffoldLauncher
+        outputs.upToDateWhen { false }
+        // Arguments are resolved when the task RUNS, so a missing -Pkind is a sentence at
+        // `gradlew scaffold`, not a failure configuring every other task in the build.
+        doFirst {
+            def kind = project.findProperty('kind')?.toString()
+            def id = project.findProperty('id')?.toString()
+            if (!kind || !id) {
+                throw new GradleException('scaffold needs -Pkind=block|item and -Pid=<id> (lower-case, the registry path); add -Pbehaviour for a class of its own, -Pscaffold.name="Display Name" for the lang entry')
+            }
+            def meta = modMeta()
+            if (!meta.id || !meta.pkg) {
+                throw new GradleException("scaffold cannot tell the mod id or root package: no readable ${fabricModJson}; pass -Pmod=<id> -Ppackage=<pkg>")
+            }
+            def a = ['--kind', kind, '--id', id, '--mod', meta.id, '--package', meta.pkg,
+                     '--resources', modResources.absolutePath, '--java', file('src/main/java').absolutePath]
+            if (project.hasProperty('behaviour') || project.hasProperty('behavior')) a << '--behaviour'
+            if (project.findProperty('scaffold.name')) a += ['--name', project.findProperty('scaffold.name').toString()]
+            if (meta.entrypoint) a += ['--entrypoint', meta.entrypoint]
+            args = a
+        }
+    }
+
+    tasks.register('checkAssets', JavaExec) {
+        group = 'verification'
+        description = 'Dangling references (fail) and unused assets (warn) in src/main/resources, before a game exists.'
+        classpath = files(toolkitJar) + scaffoldGson
+        mainClass = 'com.mattmc.mcptoolkit.scaffold.CheckAssets'
+        javaLauncher = scaffoldLauncher
+        onlyIf('src/main/resources exists') { modResources.isDirectory() }
+        doFirst {
+            def a = ['--resources', modResources.absolutePath]
+            def vjs = vanillaJars()
+            vjs.each { a += ['--vanilla', it.absolutePath] }
+            if (!vjs) logger.warn("checkAssets: no Loom minecraft jar under .gradle/loom-cache yet (run any Loom task once); minecraft: references will be counted as unchecked")
+            args = a
+        }
+        inputs.dir(modResources)
+        inputs.file(toolkitJar)
+        outputs.upToDateWhen { true }
+        // exit 1 is the verdict, and it deserves the list rather than a stack trace.
+        ignoreExitValue = true
+        doLast {
+            def code = executionResult.get().exitValue
+            if (code == 1) throw new GradleException('checkAssets: dangling references - the game would load and skip these (list above). Fix them, or see `gradlew checkAssets` for the JSON summary.')
+            if (code != 0) throw new GradleException("checkAssets exited ${code}")
+        }
+    }
+
+    if ((project.findProperty('mcmod.assets.check') ?: 'true').toString() != 'false') {
+        plugins.withId('java') {
+            tasks.named('check') { dependsOn 'checkAssets' }
+        }
+    }
+
+    // toolkitInit (RELEASE_1.md section J4): adopt THIS repository for agent sessions - the MCP
+    // server registration for the clients named (-Pclients=claude,cursor,gemini,vscode,codex or
+    // all; default claude), AGENTS.md (the session charter, once), .mcptoolkit/loop.json (once,
+    // with checkAssets as the gate), and the MCP server itself extracted from the toolkit jar into
+    // .mcptoolkit/mcp-server when no registration already names one. The port is mcmod.port: the
+    // registration's MCPTK_URL is written from that one number, and a registration that names
+    // another port is CORRECTED and reported (section B0's trap). -Ptoolkit.check reports and fails
+    // instead (namespaced: `check` is a task, and Project.hasProperty('check') answers true for it).
+    tasks.register('toolkitInit', JavaExec) {
+        group = 'build'
+        description = 'Adopt this repository for agent sessions: MCP registration(s) from mcmod.port, AGENTS.md, .mcptoolkit/loop.json, the MCP server from the jar. -Pclients=..., -Ptoolkit.check.'
+        classpath = files(toolkitJar) + scaffoldGson + scaffoldSlf4j
+        mainClass = 'com.mattmc.mcptoolkit.scaffold.ToolkitInit'
+        javaLauncher = scaffoldLauncher
+        outputs.upToDateWhen { false }
+        ignoreExitValue = true
+        doFirst {
+            if (!bridgePort) {
+                throw new GradleException('toolkitInit needs mcmod.port in gradle.properties: the port THIS repository\'s game binds, which is also what its MCP registration must name. Pick one no other dev game on this machine uses (the workbench allocates 25641 upward; 25599 is the toolkit\'s own).')
+            }
+            def a = ['--repo', projectDir.absolutePath, '--port', bridgePort.toString(), '--jar', toolkitJar.absolutePath,
+                     '--clients', (project.findProperty('clients') ?: 'claude').toString()]
+            if (project.findProperty('mcmod.profile')) a += ['--profile', project.findProperty('mcmod.profile').toString()]
+            if (project.findProperty('mcmod.server')) a += ['--server', project.findProperty('mcmod.server').toString()]
+            if (project.hasProperty('toolkit.check')) a << '--check'
+            args = a
+        }
+        doLast {
+            def code = executionResult.get().exitValue
+            if (code == 1) throw new GradleException('toolkitInit -Ptoolkit.check: a registration disagrees with mcmod.port or a file is missing (list above); run `gradlew toolkitInit` to write.')
+            if (code != 0) throw new GradleException("toolkitInit exited ${code}")
+        }
+    }
+}
+
+tasks.register('toolkitStatus') {
+    description = 'Report whether the optional mcp-toolkit dev bridge resolved, and from where.'
+    doLast {
+        logger.lifecycle(!wantsToolkit
+            ? "mcp-toolkit dependency disabled here (mcmod.toolkit=false)."
+            : toolkitAvailable
+            ? "mcp-toolkit dev bridge: ${mcptoolkitVersion} (${toolkitJar})"
+            : missingWhy())
+        logger.lifecycle("scaffold / checkAssets / toolkitInit: ${scaffoldWhy}" +
+            (scaffoldPresent ? ' - `gradlew scaffold -Pkind=block -Pid=<id>`; `check` runs checkAssets; `gradlew toolkitInit [-Pclients=all]` adopts this repository for agent sessions' : ''))
+        logger.lifecycle("screen authoring: ${uiWhy}" +
+            // project.ext, not ext: inside doLast `ext` is the TASK's extra properties (the same
+            // trap the header of this file describes), and it crashed toolkitStatus on the first use.
+            (project.ext.uiAvailable ? ' - `generateUi` compiles them, `check` verifies them (checkUi)' : ''))
+        // The port half of the same question, and the one a session gets wrong: this task is where
+        // "which game will my .mcp.json reach" is answerable without reading two files in two repos.
+        if (!wantsToolkit) {
+            return
+        }
+        logger.lifecycle(bridgePort
+            ? "bridge port: ${bridgePort} (from ${project.findProperty('port') ? '-Pport' : 'mcmod.port'})" +
+              " - this repo's .mcp.json must set MCPTK_URL=http://127.0.0.1:${bridgePort}"
+            : "bridge port: NOT declared here, so the game takes the dev default 25599. That is only" +
+              " safe while this is the one dev game running. Set mcmod.port in gradle.properties and" +
+              " MCPTK_URL in .mcp.json to give this repo a port of its own.")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The mod's published pages (ModPageConstructor).
+//
+// `modpage` renders a repo's GitHub README, its Modrinth description and its CurseForge Markdown
+// from one `modpage.yml`. It is a build-time Python CLI, not a mod and not a bridge tool: it reads the
+// repo's own files - config, banners, and the recipe JSON under src/main/resources - and writes the
+// three pages. Nothing here needs a running game, which is exactly why it lives in this plugin and
+// not in the toolkit's tool surface.
+//
+// It is wired in the same shape as the toolkit dependency above, for the same reason: PROBE, then
+// declare. Two things can be absent and both are valid states.
+//
+//   1. NO `modpage.yml` -> no tasks at all. That file IS the opt-in; a repo that has not written
+//      one is not "misconfigured", it just does not publish pages yet.
+//   2. `modpage.yml` but no CLI on this machine -> the tasks exist and SKIP. A build must not fail
+//      because a Python tool is missing from somebody's laptop.
+//
+// The one place that silence is dangerous is CI, where a skipped check reports success while
+// checking nothing. `-Pmcmod.modpage.required=true` turns absence into a failure; that is the flag
+// a pipeline sets, and the only place it belongs.
+//
+// The asymmetry between the two tasks is deliberate. `check` VERIFIES the pages (`--check`, exit 1
+// on drift) but nothing regenerates them automatically: the generated files are committed
+// artifacts, and a `build` that quietly rewrites three tracked files is a worse default than one
+// that tells you they are stale.
+//
+// Properties:
+//   mcmod.modpage           false disables all of this (default true)
+//   mcmod.modpage.check     false unhooks modpageCheck from `check` (default true)
+//   mcmod.modpage.required  true fails instead of skipping when the CLI is absent (CI)
+//   mcmod.modpage.cmd       absolute path to the `modpage` executable, when PATH cannot find it
+//   mcmod.modpage.offline   true adds --offline, forbidding the vanilla-texture fetch. NOT the
+//                           default: that cache lives in .modpage/cache/, which is gitignored, so a
+//                           fresh CI checkout has no cache to be offline with.
+// ---------------------------------------------------------------------------
+def modpageConfig = file('modpage.yml')
+def wantsModpage = (project.findProperty('mcmod.modpage') ?: 'true').toString() != 'false'
+
+// Resolving the CLI is a PATH SCAN, not an exec. Asking the shell "is modpage installed" would cost
+// a process at configuration time in every repo on every build, including the ones that will never
+// render a page.
+def firstOnPath = { String stem ->
+    def exts = (System.getenv('PATHEXT') ?: '').split(File.pathSeparator).findAll { it } as List
+    for (dir in (System.getenv('PATH') ?: '').split(File.pathSeparator)) {
+        if (!dir) continue
+        for (ext in ([''] + exts)) {
+            def candidate = new File(dir, stem + ext)
+            if (candidate.isFile()) return candidate.absolutePath
+        }
+    }
+    return null
+}
+
+// The README's two documented invocations, in its order: the console script, else `-m modpage`.
+def modpageExec = null
+def modpageWhy = 'not looked for'
+if (!wantsModpage) {
+    modpageWhy = 'disabled here (mcmod.modpage=false)'
+} else if (!modpageConfig.isFile()) {
+    modpageWhy = "no modpage.yml in ${projectDir} - run `modpage init` here to start publishing pages"
+} else {
+    def explicit = project.findProperty('mcmod.modpage.cmd')?.toString()
+    def direct = explicit ?: firstOnPath('modpage')
+    def python = firstOnPath('python') ?: firstOnPath('python3')
+    if (direct) {
+        modpageExec = [direct]
+        modpageWhy = explicit ? "${direct} (from mcmod.modpage.cmd)" : "${direct} (on PATH)"
+    } else if (python) {
+        // `python` being on PATH does NOT mean the module is importable, so this arm can still fail
+        // at exec time - which is why the failure below names the install command rather than
+        // letting a ModuleNotFoundError traceback be the whole answer.
+        modpageExec = [python, '-m', 'modpage']
+        modpageWhy = "${python} -m modpage"
+    } else {
+        modpageWhy = 'neither `modpage` nor `python` is on PATH. Fix: python -m pip install -e' +
+            ' <ModPageConstructor checkout>, or set mcmod.modpage.cmd to the executable.'
+    }
+}
+
+def modpageRequired = (project.findProperty('mcmod.modpage.required') ?: 'false').toString() == 'true'
+def modpageOffline = (project.findProperty('mcmod.modpage.offline') ?: 'false').toString() == 'true'
+def modpageArgs = modpageOffline ? ['--offline'] : []
+
+ext.modpageAvailable = modpageExec != null
+ext.modpageWhy = modpageWhy
+
+if (wantsModpage && modpageConfig.isFile()) {
+    if (modpageRequired && modpageExec == null) {
+        throw new GradleException("mcmod.modpage.required=true but ${modpageWhy}")
+    }
+
+    tasks.register('modpageBuild', Exec) {
+        group = 'documentation'
+        description = "Render this mod's README, Modrinth description and CurseForge Markdown from modpage.yml."
+        workingDir = projectDir
+        commandLine([*modpageExec, 'build', *modpageArgs])
+        onlyIf("the modpage CLI resolved (${modpageWhy})") { modpageExec != null }
+        // Deliberately no up-to-date check: this is the task you run to MAKE the pages current, and
+        // re-running it is cheap because modpage only rewrites files whose content changed.
+        outputs.upToDateWhen { false }
+    }
+
+    tasks.register('modpageCheck', Exec) {
+        group = 'verification'
+        description = 'Fail if the generated pages are out of date with modpage.yml and the assets.'
+        workingDir = projectDir
+        commandLine([*modpageExec, 'build', '--check', *modpageArgs])
+        onlyIf("the modpage CLI resolved (${modpageWhy})") { modpageExec != null }
+
+        // What the pages are rendered FROM, declared so that `check` does not spawn Python and
+        // re-render every recipe image on every build. The recipe images live under assets/ and are
+        // therefore both an input and a side effect of running this - but modpage writes an image
+        // only when its bytes changed, so the second run converges instead of oscillating.
+        inputs.file(modpageConfig)
+        inputs.files(fileTree('assets'))
+        inputs.files(fileTree('src/main/resources'))
+        inputs.files(fileTree('.modpage') { exclude 'cache/**' })
+        // The committed pages are inputs too: `--check` compares against them, so hand-editing one
+        // must re-run the comparison rather than stay green on a stale verdict.
+        // curseforge.html is the opt-in `-t curseforge-html` page (ModPageConstructor 0.2.0+); listed so
+        // a repo that still ships it re-checks when it is touched, harmless when it is absent.
+        inputs.files(files('README.md', 'dist/modrinth.md', 'dist/curseforge.md', 'dist/curseforge.html')
+            .filter { it.isFile() })
+        // Inputs and no outputs would mean "always out of date", i.e. Python on every build. A
+        // verification task's real output is the verdict, so the inputs above are the whole story.
+        outputs.upToDateWhen { true }
+
+        // exit 1 is modpage's "these files are stale" - a verdict, not a crash, and it deserves the
+        // fix rather than a stack trace.
+        ignoreExitValue = true
+        doLast {
+            def code = executionResult.get().exitValue
+            def qualifier = project.path == ':' ? '' : project.path + ':'
+            if (code == 1) {
+                throw new GradleException('The generated mod pages are out of date. Run' +
+                    " `gradlew ${qualifier}modpageBuild` (or `modpage build`) and commit the result.")
+            }
+            if (code != 0) {
+                throw new GradleException("modpage exited ${code}: ${commandLine.join(' ')}." +
+                    ' If that is a missing module, install it: python -m pip install -e' +
+                    ' <ModPageConstructor checkout>')
+            }
+        }
+    }
+
+    if ((project.findProperty('mcmod.modpage.check') ?: 'true').toString() != 'false') {
+        // withId, not a bare tasks.named: `check` exists because Loom applies the java plugin and
+        // this script is applied after Loom - but a root that somehow has neither must not break.
+        plugins.withId('java') {
+            tasks.named('check') { dependsOn 'modpageCheck' }
+        }
+    }
+}
+
+tasks.register('modpageStatus') {
+    description = 'Report whether this repo publishes mod pages, and which modpage CLI would render them.'
+    doLast {
+        logger.lifecycle(modpageExec != null
+            ? "modpage: ${modpageWhy}\nconfig:  ${modpageConfig}\n" +
+              '`check` verifies the pages; `modpageBuild` regenerates them.'
+            : "modpage: NOT available - ${modpageWhy}")
+    }
+}

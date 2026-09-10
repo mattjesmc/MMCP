@@ -1,0 +1,29 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "MMCP License (see LICENSE)"
+
+[[mods]]
+modId = "spike"
+version = "0.0.1"
+displayName = "Cross-loader Spike"
+description = "CROSS_LOADER_DESIGN.md Stage 0. Throwaway."
+
+# The whole point: the SAME mixin config file mcp-toolkit ships for Fabric, declared here for
+# NeoForge. Unobfuscated 26.x means no refmap and no per-loader edit — if that claim is wrong, it
+# is wrong right here.
+[[mixins]]
+config = "spike.mixins.json"
+
+[[dependencies.spike]]
+modId = "neoforge"
+type = "required"
+versionRange = "[26.2,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.spike]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.2,)"
+ordering = "NONE"
+side = "BOTH"

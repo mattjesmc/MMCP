@@ -1,0 +1,13 @@
+{
+  "type": "mcptoolkit:workshop",
+  "generator": {
+    "type": "minecraft:flat",
+    "settings": {
+      "biome": "mcptoolkit:canvas",
+      "lakes": false,
+      "features": false,
+      "structure_overrides": [],
+      "layers": []
+    }
+  }
+}

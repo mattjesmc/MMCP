@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "mcptoolkit",
+  "version": "${version}",
+  "name": "MCP Toolkit",
+  "description": "A localhost HTTP bridge and tool registry that lets an external MCP server drive the game: run tools on the server or client thread, inspect state, and control the client. A development/authoring tool.",
+  "authors": ["mattmc"],
+  "license": "MMCP License (see LICENSE)",
+  "icon": "icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.mattmc.mcptoolkit.fabric.FabricEntry"
+    ],
+    "client": [
+      "com.mattmc.mcptoolkit.fabric.FabricClientEntry"
+    ]
+  },
+  "mixins": [
+    "mcptoolkit.mixins.json"
+  ],
+  "accessWidener": "mcptoolkit.accesswidener",
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~26.2",
+    "java": ">=25"
+  }
+}

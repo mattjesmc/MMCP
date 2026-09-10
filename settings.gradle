@@ -1,0 +1,9 @@
+// The workbench root is NOT a build. The build roots are one level down, each with its own
+// settings.gradle: mcp-toolkit/ (the product), gradle-conventions/ (the plugin), template-mod/,
+// spike-neoforge/. This file exists so the root reads as a Gradle root to tooling that walks up
+// from a subdirectory (mcp-server/local/project.mjs resolves a session's project that way) and
+// then looks one level down for the launchable build.
+//
+// Village Jobs, the mod that used to be the root project here, is its own checkout
+// beside this one since 2026-09-06.
+rootProject.name = 'mcmodding'

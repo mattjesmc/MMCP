@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        gradlePluginPortal()
+        mavenCentral()
+        // The workspace's convention plugin (../gradle-conventions/), resolved from mavenLocal by
+        // coordinate. Scoped so a stale local copy of some OTHER plugin cannot shadow the real one.
+        mavenLocal {
+            content {
+                includeGroup 'com.mattmc.gradle'   // the convention plugin's jar
+                includeGroup 'com.mattmc.mcmod'    // its plugin marker (group == plugin id)
+            }
+        }
+    }
+}
+
+// The toolkit is its own build root, not a subproject of a mod. That is what lets it host its own
+// runClient/runServer: as a subproject it had to disable them (an unqualified `gradlew runClient`
+// would have launched a second, toolkit-only client alongside the mod's), which in turn meant some
+// OTHER mod had to be the dev-loop host. Consumers depend on it by maven coordinate, never by path
+// into build/libs - see EXTENDING.md.
+rootProject.name = 'mcp-toolkit'

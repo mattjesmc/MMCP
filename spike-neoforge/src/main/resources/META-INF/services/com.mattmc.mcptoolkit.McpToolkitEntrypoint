@@ -1,0 +1,6 @@
+# CROSS_LOADER_DESIGN.md section 13. Uncomment the line below to re-run the CONTAINMENT cell: an
+# unloadable class ahead of a good one must cost only itself. Verified 2026-08-22 - ping reported
+# spike with tools:[spike_toolkit_probe] AND failures:[IllegalStateException ...], which is the
+# whole reason this file is read by hand instead of by ServiceLoader.
+#com.mattmc.spike.NoSuchExtensionClass
+com.mattmc.spike.SpikeToolkitExtension

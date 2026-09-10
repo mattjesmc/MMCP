@@ -1,0 +1,23 @@
+{
+  "format": 1,
+  "params": [
+    {
+      "name": "container",
+      "type": "container"
+    },
+    {
+      "name": "index",
+      "type": "int"
+    }
+  ],
+  "elements": [
+    {
+      "kind": "slot",
+      "id": "sync",
+      "x": -1000,
+      "y": -1000,
+      "container": "$container",
+      "index": "$index"
+    }
+  ]
+}

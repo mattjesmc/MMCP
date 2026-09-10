@@ -1,0 +1,23 @@
+plugins {
+    // Loom's plugin id changed in 26.1+: net.fabricmc.fabric-loom (was fabric-loom)
+    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+    // The MCP Toolkit's shared conventions: Minecraft/loader/Fabric-API versions, the Java level,
+    // the repositories, fabric.mod.json version expansion, the toolkit dev bridge on the runtime
+    // classpath, and the tasks this template is built around - scaffold, checkAssets, toolkitInit.
+    // Must come AFTER Loom: it configures things Loom creates.
+    id 'com.mattmc.mcmod' version '0.7.0'
+    id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = project.archives_base_name
+}
+
+dependencies {
+    // Fabric API, from the version the convention plugin pins. Drop this line and the `fabric-api`
+    // entry in fabric.mod.json if the mod does not need it; the toolkit itself does not.
+    implementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+}

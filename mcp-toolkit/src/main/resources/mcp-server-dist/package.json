@@ -1,0 +1,12 @@
+{
+  "name": "mcp-toolkit-server",
+  "version": "0.13.0",
+  "description": "MCP server for the MCP Toolkit game bridge (extracted from the mod jar into the game directory when the mod starts)",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

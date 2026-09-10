@@ -1,0 +1,326 @@
+plugins {
+    // Same Loom id as the root project (26.1+): net.fabricmc.fabric-loom
+    id 'net.fabricmc.fabric-loom' version '1.17-SNAPSHOT'
+    // Shared workspace conventions: Minecraft/loader versions, Java level, repositories,
+    // fabric.mod.json version expansion. This project sets mcmod.toolkit=false in
+    // gradle.properties, so the plugin does NOT add an mcp-toolkit dependency here - that would be
+    // this project depending on itself. See mcmodding/gradle-conventions/.
+    id 'com.mattmc.mcmod' version '0.2.0'
+    id 'maven-publish'
+}
+
+// The toolkit is a standalone reusable library with its own release cadence, so its published version is
+// decoupled from the mods' mod_version. Bump this when publishing new tools to mavenLocal.
+// THE CHANGELOG IS CHANGELOG.md (moved out of this file 2026-09-06, RELEASE_1.md section G):
+// one `## x.y.z` section per version, newest first. Every version bump here gets its entry there.
+
+version = '0.145.0'
+group = 'com.mattmc.mcptoolkit'
+
+base {
+    archivesName = 'mcp-toolkit'
+}
+
+loom {
+    // Replaces the two members fabric-api's transitive access wideners opened (see the .accesswidener).
+    accessWidenerPath = file('src/main/resources/mcptoolkit.accesswidener')
+}
+
+dependencies {
+    // Minecraft 26.1+ ships unobfuscated: no `mappings` dependency, plain `implementation`.
+    // Minecraft and fabric-loader come from the com.mattmc.mcmod convention plugin.
+    //
+    // Loader only at COMPILE time - no fabric-api. The toolkit rides its own hooks (hooks/ +
+    // mixin/): ~12 @Inject/accessor mixins into vanilla replace the fabric-api events/registries it
+    // used, and it coexists with fabric-api when other mods bring it. That second half is not a
+    // claim any more: `-Pfabricapi=true` boots this project's own dev game with fabric-api loaded
+    // (see the block further down), which is the only way it can be checked from here.
+
+    // No fabric-api, at compile time OR in the default runtime. The one thing that used to need it
+    // was entity type registration: mod entrypoints run AFTER BuiltInRegistries freezes, so
+    // EntityType.Builder.build() threw "This registry can't create intrusive holders" and
+    // Registry.register threw "Registry is already frozen". fabric-registry-sync's role was to
+    // re-open that door. BuiltInRegistriesMixin instead registers the bodies during vanilla's own
+    // bootStrap(), immediately before freeze() - the same moment and mechanism vanilla uses for its
+    // own entity types - so the door never has to be re-opened. When fabric-api IS present it moves
+    // that freeze instead, so DroneEntities.bootstrap() covers the other window too.
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests, for the halves of the toolkit that have no game in them.
+//
+// The screen-authoring model (ui/doc, SCREEN_AUTHORING_DESIGN.md section 7.1) and slice 2's emitter
+// read JSON and write Java text with no Minecraft on their import list, so they are testable the
+// ordinary way: `gradlew test`, and `build` runs it. The live probes in mcp-server/probes stay the
+// arbiter for everything that touches a running game; this is for the code that must NOT.
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// The modder's session charter rides in the jar as the AGENTS.md toolkitInit writes into a
+// repository (scaffold/ToolkitInit). docs/guides/SESSION_CHARTER.md stays the site of record; this
+// copy is made at build so the two cannot drift.
+tasks.named('processResources') {
+    from('docs/guides') {
+        include 'SESSION_CHARTER.md'
+        into 'mcptoolkit/bootstrap'
+        rename { 'AGENTS.md' }
+    }
+    // The license travels WITH the jar. fabric.mod.json and neoforge.mods.toml both say
+    // "see LICENSE", and a jar that names a file it does not carry is telling someone to go
+    // and find terms they were never handed - which matters more here than it would under MIT,
+    // because these terms restrict what the holder of the jar may do with it (section 4: the
+    // jar is distributed from one place). The root LICENSE is the single site of record; this
+    // copies it, so the two can never disagree.
+    from(file('../LICENSE')) {
+        into 'META-INF'
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // UiDocumentTest reads the model's sources to pin the no-Minecraft rule; make the root explicit.
+    workingDir = projectDir
+    // ScaffoldTest compiles the scaffold's emitted Java with javac against THIS project's compile
+    // classpath - the Loom-mapped 26.2 jar and nothing a consumer would not also have - which is
+    // the "compiles against 26.2 with no game" arbiter RELEASE_1.md section J1 asks for.
+    systemProperty 'mcptk.compileClasspath', sourceSets.main.compileClasspath.asPath
+}
+
+// The toolkit's own generated screen (ui/sample): the shipped example document compiled by the
+// emitter, registered by UiSamples, and what the conformance probe compares the interpreter against.
+// UiEmitterTest pins the checked-in machine files to the emitter's current output, so after a change
+// to the emitter or the example: `gradlew generateUi`, then commit the result. Same main class the
+// convention plugin's task runs in a consumer; here it runs on main's own classes (no jar needed, so
+// it is safe beside a running dev game - it writes SOURCES, not build/).
+tasks.register('generateUi', JavaExec) {
+    group = 'build'
+    description = "Regenerate ui/sample from assets/mcptoolkit/ui/*.ui.json (the toolkit's own generated screen)."
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.mattmc.mcptoolkit.ui.emit.UiGenerate'
+    // The package comes from gradle.properties, not from here: `ui_doc op:"generate"` runs this same
+    // emitter in-process and reads that same key (UiProject), so an in-session generate and this task
+    // cannot put the code in different places.
+    args '--mod', 'mcptoolkit', '--package', project.property('mcmod.ui.package').toString(),
+        '--docs', 'src/main/resources/assets/mcptoolkit/ui', '--common', 'src/main/java', '--client', 'src/main/java'
+}
+
+// ---------------------------------------------------------------------------
+// The fabric-api dev run: the arbiter for the OTHER world.
+//
+// This project deliberately ships and runs without fabric-api, which is what keeps the loader-only
+// claim honest. The cost of that is that nothing in this repo could ever boot the toolkit the way
+// its CONSUMERS boot it - menagerie, rocketeer and villagejobs all bring fabric-api - so an
+// incompatibility with it was invisible here and only surfaced in a downstream mod. It did:
+// fabric-registry-sync delays the registry freeze past mod init, and the entrypoint died asserting
+// the freeze had already happened (see 0.80.0 below).
+//
+//     gradlew runServer -Pfabricapi=true
+//     gradlew runClient -Pfabricapi=true
+//
+// localRuntime, not implementation: fabric-api must never reach the compile classpath here, or the
+// hooks/ layer could start quietly depending on it again.
+if (project.findProperty('fabricapi').toString() == 'true') {
+    dependencies {
+        localRuntime "net.fabricmc.fabric-api:fabric-api:${fabricApiVersion}"
+    }
+    logger.lifecycle("mcp-toolkit dev run: fabric-api ${fabricApiVersion} ON (compatibility arbiter).")
+}
+
+// ---------------------------------------------------------------------------
+// The NeoForge half of the unified jar (CROSS_LOADER_DESIGN.md §4, stage 2).
+//
+// ONE artifact, two loaders. Everything under src/main/ is loader-neutral (vanilla + mixin only);
+// src/neoforge/ holds the two classes that name NeoForge, exactly as com/mattmc/mcptoolkit/fabric/
+// and platform/FabricPlatform hold the two that name Fabric. Their output is folded into the same
+// jar, alongside both metadata files — each loader reads its own and ignores the other's.
+//
+// compileOnly, and no NeoForge run tasks here. This project is a Loom build; ModDevGradle wants to
+// own the same things Loom owns (the minecraft configuration, the run tasks), and putting both in
+// one root is a fight for no gain while the NeoForge surface is two classes. What makes this work
+// at all is that Minecraft 26.x is unobfuscated: the vanilla classes Loom puts on the compile
+// classpath are byte-for-byte the ones NeoForge runs, so nothing needs remapping between them.
+//
+// The dev loop for the NeoForge side therefore lives OUTSIDE this project - see spike-neoforge/,
+// which is a real ModDevGradle workspace and can load this jar from its run/*/mods/ directory.
+//
+// The three FML coordinates are the transitive set of neoforge <neoforgeVersion>; they are named
+// explicitly because the plain `neoforge` artifact is only net/neoforged/neoforge/** and does not
+// carry @Mod, FMLPaths, ModList, IEventBus or Dist. Bump them together.
+// ---------------------------------------------------------------------------
+def neoforgeVersion = project.findProperty('neoforge_version') ?: '26.2.0.64'
+
+repositories {
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/releases'
+    }
+}
+
+sourceSets {
+    neoforge {
+        java.srcDirs = ['src/neoforge/java']
+        // The loader-neutral half is a compile dependency, not a duplicate: NeoForgePlatform
+        // implements LoaderPlatform and NeoForgeEntry calls McpToolkit.init(). Minecraft comes with
+        // main's classpath, access-widened by Loom - the same members the AT opens at runtime.
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+    }
+}
+
+dependencies {
+    neoforgeCompileOnly "net.neoforged:neoforge:${neoforgeVersion}:universal"
+    neoforgeCompileOnly 'net.neoforged.fancymodloader:loader:11.0.16'   // @Mod, FMLPaths, ModList, IModFile
+    neoforgeCompileOnly 'net.neoforged:bus:8.0.5'                       // IEventBus
+    neoforgeCompileOnly 'net.neoforged:mergetool:2.0.7:api'             // Dist
+}
+
+// Fold the NeoForge classes into the one jar. `compileJava` never sees them, so a common-code change
+// that breaks the NeoForge side is caught by `build`, not discovered on someone else's machine.
+tasks.named('jar') {
+    from sourceSets.neoforge.output
+}
+
+tasks.named('build') { dependsOn tasks.named('neoforgeClasses') }
+
+// fabric.mod.json version expansion comes from the convention plugin; this block only adds the
+// bundled server.
+processResources {
+    // neoforge.mods.toml carries ${version} the same way fabric.mod.json does, but the convention
+    // plugin only knows about the Fabric one (it is a Fabric-shaped plugin - see stage 4).
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand version: project.version.toString()
+    }
+
+    // Bundle the Node MCP server for runtime extraction (client ClaudeBootstrap). Slim on purpose:
+    // no ablation/companion harnesses, no probes, no node_modules, no repo package.json — a slim
+    // dist package.json lives in src/main/resources/mcp-server-dist/ beside the copied sources.
+    // ../mcp-server, not rootProject: this project IS the root now. The server ships INSIDE the
+    // jar (mcp-server-dist) because the two are one release unit - see ARCHITECTURE.md.
+    from(file('../mcp-server')) {
+        into 'mcp-server-dist'
+        // ablation/view.mjs: index.mjs imports it (surface-view re-encoding) — a dist without it
+        // crashes at import time on a fresh extract.
+        // bridge-base.mjs: index.mjs AND local/dev.mjs both import it (which port this session
+        // talks to, and which port a game it launches must bind). Same trap as ablation/view.mjs
+        // below - this is an INCLUDE WHITELIST, so a new top-level module is silently absent
+        // from the dist and every fresh extract dies at import time, not at use time.
+        // upstream/blockbench.mjs: index.mjs has imported it since 0.108.0 and it was NEVER in this
+        // list - the exact failure the comment above describes, found while adding the next three.
+        // image/ (the PNG codec and the budget) and loop/ (the project loop file) are 0.122.0's.
+        include 'index.mjs', 'bridge-base.mjs', 'memory/*.mjs', 'local/*.mjs', 'ablation/view.mjs',
+            'upstream/*.mjs', 'image/*.mjs', 'loop/*.mjs'
+        exclude 'memory/probes/**'
+    }
+
+    // The Blockbench plugins, for the same reason and by the same argument (TODO.md 1.10): they are
+    // one release unit with the shim - the shim speaks a plugin surface and a mismatched pair is a
+    // silent wrong answer - and until 0.141.0 they shipped in NOBODY'S jar. On this machine every
+    // install instruction names `mcp-toolkit/blockbench/...`, a real path; a consumer who resolved
+    // the jar from a Maven coordinate has no such path, so the door to the whole Blockbench half
+    // was one they could not reach. ServerExtract and ToolkitInit write them out beside the shim.
+    //
+    // A GLOB, not a whitelist, and deliberately: `mcp-server-dist` above is an include whitelist and
+    // its comment records two modules that were silently absent for versions. `*.js` picks up a
+    // fourth plugin the day it is written, and `*.test.mjs` (the harnesses) does not match it.
+    // `BundledResourcesTest` asserts the equality either way, off the processed resources.
+    from(file('blockbench')) {
+        into 'blockbench-dist'
+        include '*.js'
+    }
+}
+
+// Publish to mavenLocal (`gradlew publishToMavenLocal` here, or just `build`) so other workspaces (e.g. the
+// nijntje mod) can depend on the bridge with `implementation 'com.mattmc.mcptoolkit:mcp-toolkit:<ver>'`.
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+        }
+    }
+    // F8 (RELEASE.md section 5, decided 2026-09-06): the release is served from a STATIC Maven - a
+    // directory of the usual group/artifact/version layout, pushed to a `maven` branch and served
+    // by GitHub Pages (or fetched raw). `gradlew publishAllPublicationsToStaticRepository
+    // -Pmaven_repo=<checkout of that branch>` writes it; the push is a human's. Consumers then drop
+    // their mavenLocal blocks for the URL the README's first section names. mavenLocal stays the
+    // dev loop: `build` still publishes there.
+    repositories {
+        def staticRepo = project.findProperty('maven_repo')
+        if (staticRepo) {
+            maven {
+                name = 'static'
+                url = file(staticRepo.toString()).toURI()
+            }
+        }
+    }
+}
+
+// Consumers resolve the toolkit by MAVEN COORDINATE from mavenLocal (EXTENDING.md), not by reaching
+// into this project's build/libs. Publishing as part of `build` keeps the ergonomics that made the
+// file-path habit win in the first place - build the toolkit and the sibling mods see it with no
+// extra step - while the coordinate keeps working when this project moves out of this tree.
+tasks.named('build') { finalizedBy tasks.named('publishToMavenLocal') }
+
+// The toolkit hosts its own dev game. This used to be the opposite: these tasks were DISABLED,
+// because as a subproject of the villagejobs mod an unqualified `gradlew runClient` would have
+// launched a second, toolkit-only client alongside the mod's. The price of that was that some mod
+// had to be the toolkit's dev-loop host, which is how a paused content mod ended up sitting
+// underneath the whole workbench. Own root, own runs, no host.
+// `-Pport=<n>` moves this run's bridge off the dev default (25599), so a second dev game can boot
+// beside one that is already running - another mod's client, or the server cell of a boot matrix -
+// without either instance's config file being touched. -Dmcptoolkit.port overrides everything (see
+// BridgeConfig), and a run/config/mcptoolkit.properties that a human maintains is not a scratch pad.
+def bridgePort = project.findProperty('port')
+// `-PrunDir=<path>` moves a SERVER run off ../run-server. -Pport alone is not enough to boot a
+// second dev server beside a live one, which the comment above implied and the world disagreed
+// with: two servers on one directory die on DirectoryLock ("another process has locked a portion
+// of the file"), because the conflict is the WORLD, not the socket. Relative to this project dir.
+def serverRunDir = project.findProperty('runDir') ?: '../run-server'
+
+loom {
+    runs {
+        client {
+            // hotswap_class self-attaches a java agent for Instrumentation; the JVM refuses
+            // self-attach without this.
+            vmArg '-Djdk.attach.allowAttachSelf=true'
+            if (bridgePort) {
+                vmArg "-Dmcptoolkit.port=${bridgePort}"
+            }
+            // Auto-join a dedicated server instead of driving the multiplayer screen by hand:
+            //     gradlew runClient "-PjoinServer=127.0.0.1:25565"
+            // (quote it - PowerShell splits an unquoted -Pkey=1.2.3 at the dot.) The same switch the
+            // NeoForge spike has, and the reason it exists here: the human-capture rig behaves
+            // differently over a real connection than over an integrated server's memory one, so a
+            // client-joins-server cell is the only way to compare the two loaders on equal terms.
+            if (project.hasProperty('joinServer')) {
+                programArgs '--quickPlayMultiplayer', project.property('joinServer').toString()
+            }
+            // Boot straight into the AUTHORING WORLD with a screen-authoring document open
+            // (SCREEN_AUTHORING_DESIGN.md 23):
+            //     gradlew runClient "-PuiDoc=mcptoolkit:example" -PuiEdit
+            // (quote it - PowerShell splits an unquoted -Pkey=a:b at the colon.) A system property
+            // rather than --quickPlaySingleplayer, because that argument can only open a save that
+            // already EXISTS and the first run of this door has to create one; see UiWorldClient.
+            if (project.hasProperty('uiDoc')) {
+                vmArg "-Dmcptoolkit.ui.open=${project.property('uiDoc')}"
+            }
+            if (project.hasProperty('uiEdit')) {
+                vmArg '-Dmcptoolkit.ui.edit=true'
+            }
+            // DELIBERATELY the workspace-level run/, not this project's. That directory IS the
+            // accumulated dev instance - the survival saves, run/mcptoolkit/survival (which
+            // tools/obs/transcript-tail.mjs and tools/transcript/analyse.mjs both read by path),
+            // review/, options.txt. Moving the build root must not move the game directory.
+            runDir '../run'
+        }
+        server {
+            vmArg '-Djdk.attach.allowAttachSelf=true'
+            if (bridgePort) {
+                vmArg "-Dmcptoolkit.port=${bridgePort}"
+            }
+            // Its own directory: a dev client holds ../run/logs/latest.log open, so a server
+            // sharing it dies on "Device or resource busy".
+            runDir serverRunDir
+        }
+    }
+}

@@ -1,0 +1,27 @@
+{
+  "_comment": "The camera's canvas (RENDER_SEAM_DESIGN.md 4.2). skybox:none skips the sky pass entirely, and the frame graph's clear pass clears to the FOG colour - so visual/fog_color IS the background. visual/ambient_light_color #FFFFFF with no skylight is flat shadowless studio light (and it is that attribute, NOT `ambient_light`, that the 26.2 lightmap reads - see workshop.json), and no timelines means no day, no night and no moving sun. min_y -64 is load-bearing: void darkness is clamp((32 + min_y - camera_y)/32), so the working plane at y=64 sits 128 above min_y and never fades grey.",
+  "has_fixed_time": true,
+  "has_skylight": false,
+  "has_ceiling": false,
+  "has_ender_dragon_fight": false,
+  "coordinate_scale": 1.0,
+  "min_y": -64,
+  "height": 384,
+  "logical_height": 384,
+  "infiniburn": "#minecraft:infiniburn_overworld",
+  "ambient_light": 1.0,
+  "monster_spawn_light_level": 0,
+  "monster_spawn_block_light_limit": 0,
+  "skybox": "none",
+  "attributes": {
+    "visual/fog_color": "#FFFFFF",
+    "visual/sky_color": "#FFFFFF",
+    "visual/fog_start_distance": 512.0,
+    "visual/fog_end_distance": 2048.0,
+    "visual/sky_fog_end_distance": 2048.0,
+    "visual/cloud_fog_end_distance": 2048.0,
+    "visual/star_brightness": 0.0,
+    "visual/sky_light_color": "#FFFFFF",
+    "visual/ambient_light_color": "#FFFFFF"
+  }
+}

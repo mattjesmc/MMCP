@@ -1,0 +1,71 @@
+{
+  "_": [
+    "A GENERIC MINECRAFT LOOP FILE: one session authors one block model - geometry and texture in",
+    "Blockbench, exported into the mod's resources, pushed into the running game and looked at.",
+    "Copy THIS FILE and check-block-model.mjs beside it into <your mod>/.mcptoolkit/ as loop.json",
+    "and check-block-model.mjs, leave MCPTK_PROFILE unset so the session launches in this profile,",
+    "and edit both until they are your project's rules. docs/guides/LOOPS.md is the walkthrough;",
+    "mcp-server/loop/loop.mjs is the schema and the checker contract.",
+    "",
+    "THE CHECK RUNS WHERE ITS SUBJECT IS. A `run` check is a command on the FILESYSTEM, and the",
+    "filesystem only learns about the model when export_model writes it - so this one fires after",
+    "export_model rather than after every edit, and reads exactly what was just written. That makes",
+    "the loop's rhythm export-early-export-often, which is the right habit anyway: the exported json",
+    "is what the game loads. A loop that wants a report on EVERY editing reply needs the other form,",
+    "an `eval` check, which runs inside Blockbench through risky_eval and can read the live project;",
+    "loop.mjs documents it and there is no file for it to go stale against.",
+    "",
+    "THE GATE IS ON push_asset, NOT ON export_model. Gating the tool that FEEDS the check deadlocks:",
+    "the exported model has a problem, the fix is in Blockbench, and clearing the problem needs",
+    "another export - which the gate would refuse. So the gate sits on the next act instead, which",
+    "is also the one worth guarding: a broken model does not go into the running game. Nothing is",
+    "gated until the check has run once; a session that never exports has nothing standing.",
+    "",
+    "THE KEEP-LIST IS PRICED. Every name here is paid on EVERY turn of the session, so it is the",
+    "whole cost lever (LOOP_KIT_DESIGN.md section 11.2). This is `art` minus what a block model has",
+    "no use for: `animation` (a block model has no keyframes), `stage_entity` and `launch_game` and",
+    "`get_log` and `list_assets` and `render`, and the seven mem_* tools. `trigger_action` is absent",
+    "for a different reason - `art` excludes it on purpose (driving the app's UI blind is a fallback,",
+    "not a pipeline) and profile.keep is ABSOLUTE rather than a filter over its base, so listing it",
+    "here would quietly put it back. Every other name below is served by `art` today; a name that is",
+    "not warns on the shim's stderr, and a REAL tool this list omits is silent, so re-read it against",
+    "the manifest when the surface moves. probes/loop-examples.test.mjs is what keeps this one honest.",
+    "",
+    "WHAT THE CHECKER DOES NOT SEE. It reads the exported json and the PNG files it names: element",
+    "bounds and rotations, face and uv legality, texture variables that resolve, sheets that exist.",
+    "It cannot see the blockstate that points at the model, the block's registration, the language",
+    "entry, or whether the thing looks right - that last one is what the pictures are for, and the",
+    "budget below is small on purpose because every picture is re-sent on every later turn."
+  ],
+  "checks": [
+    {
+      "name": "block",
+      "after": { "tools": ["export_model"] },
+      "run": ["node", ".mcptoolkit/check-block-model.mjs", "--assets", "src/main/resources/assets", "--json", "--brief"],
+      "stateful": true,
+      "gate": ["push_asset"],
+      "timeout_ms": 8000
+    }
+  ],
+  "profile": {
+    "base": "art",
+    "keep": [
+      "get_project_info", "project", "list_outline", "find_elements_by_criteria", "get_selection", "inspect",
+      "place_cube", "modify_cube", "add_group", "element",
+      "create_texture", "apply_texture", "list_textures", "get_texture", "texture", "paint_faces", "paint_ascii",
+      "export_model", "risky_eval",
+      "set_camera_angle", "capture_screenshot",
+      "undo", "redo", "get_undo_stack",
+      "ping", "push_asset", "reload_resources", "screenshot"
+    ],
+    "notes": {
+      "project": " Start a block with op:new {format:\"java_block\", texture_width:16, texture_height:16}, which also binds it to this session; op:save writes the .bbmodel you keep beside the mod, and it is not what the game loads.",
+      "place_cube": " A block model's cubes live in 0..16 on every axis - that is the block itself - and Minecraft refuses anything outside -16..32. Leave `group` alone unless the model needs bones; a block model has no bones.",
+      "create_texture": " 16x16 for one block face's worth of pixels; a sheet whose height is a multiple of its width is read by the game as an ANIMATION strip and needs a .mcmeta beside it.",
+      "paint_faces": " Whole faces by \"<cube>.<face>\", one call for all of them. Paint moves with the faces when a cube is resized, so paint after the geometry settles.",
+      "export_model": " This is what the game loads, and it is what the check reads: export_model {codec:\"java_block\", path:\"src/main/resources/assets/<namespace>/models/block/<name>.json\"}. Export whenever the geometry changes - the check is the only thing that sees the file.",
+      "push_asset": " Puts the exported json and the PNG into the RUNNING game; follow it with reload_resources. Refused while the last check left problems standing, unless you pass force:\"<why>\"."
+    },
+    "instructions": "Blockbench is open and this session is authoring ONE Minecraft block model. Bind a project first (`project op:new {format:\"java_block\"}` for a new one, `op:open {path}` for an existing .bbmodel) and touch no other tab. Model in block coordinates: 0..16 on every axis is the block, +Y is up, and the game refuses an element outside -16..32. Geometry first, then the texture, then look. `export_model {codec:\"java_block\", path:...}` writes what the game actually loads, and every export's reply ends with the block's check - fix what it names before moving on. `push_asset` into the running game is refused while problems stand unless you force it with a reason."
+  }
+}
