@@ -189,7 +189,14 @@ $CHUNKS = [ordered]@{
           # `tooltip` and `studio-entity` drive the client's screen and studio like `render-studio`;
           # `create-world` is GATED (MCPTK_PROBE_CREATE_WORLD=1, title screen) and self-skips in
           # a battery, so listing it here changes nothing but the warning.
-          'context-column', 'create-world', 'headless-surface', 'studio-entity', 'tooltip')
+          'context-column', 'create-world', 'headless-surface', 'studio-entity', 'tooltip',
+          # `in-jar-mcp` (0.146.0) is THE OTHER DOOR - the MCP server the mod jar hosts itself
+          # (IN_JAR_MCP_DESIGN.md). Declared here on the day it was written rather than after a WARN
+          # named it, because this file is the one place that decides whether a door is watched at
+          # all: every other probe in this suite drives `/cmd`, so until this line a regression in
+          # `/mcp` had nothing red to land on. Surface-shaped like its neighbours here - it needs a
+          # server to answer `ping` and `run_command`, stages nothing and owns no site.
+          'in-jar-mcp')
     # c -- perception: what the body can see, sense, locate and summarise about the world.
     c = @('attention-cost', 'block-watch', 'check-path-r1', 'drown-net', 'fan-density', 'hazards',
           'locate', 'pattern-search', 'perception', 'perception-coverage', 'perception-mode',

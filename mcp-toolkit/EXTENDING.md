@@ -165,6 +165,13 @@ answer.
 description for a reader who cannot see your code: what it does, what it returns, and what the
 failure reasons mean.
 
+**Your tool is served on both doors, and you do not have to do anything for that.** A registered tool
+appears in the `/tools` manifest the Node server proxies AND in the `tools/list` of the game's own
+MCP server (`docs/platform/IN_JAR_MCP_DESIGN.md`), which dispatches through the same
+`BridgeServer.execute` chokepoint. The one thing to know: the in-jar server's `observe` surface is
+computed from the `Mechanism` you declared, so a read you tag `WORLD_EDIT` out of caution is a read
+that a read-only session cannot call. Declare the real one.
+
 **Register definitions, not resolved objects.** `registerTools` runs during the toolkit's init: other
 mods' registries may not be populated and no world is loaded. Resolve blocks, items and levels inside
 the handler, when it is called.

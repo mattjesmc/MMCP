@@ -62,6 +62,8 @@ public final class BridgeServer {
      * a port nothing was serving.
      */
     private static volatile int boundPort = -1;
+    /** Whether the in-jar MCP server is served at {@code /mcp}. Decided once, in {@link #init()}. */
+    private static volatile boolean mcpEnabled;
     /** What {@code init()} asked for, kept apart from what was got, so a failure can name both. */
     private static volatile int requestedPort = -1;
 
@@ -77,11 +79,14 @@ public final class BridgeServer {
     public static void init() {
         // Precedence: explicit -Dmcptoolkit.port (a value <= 0 disables) → config file → env default.
         Integer sysProp = Integer.getInteger("mcptoolkit.port");
+        // Read unconditionally, which the port path used not to do: the file carries the MCP door's
+        // two settings as well as the port, and a dev run (always -Dmcptoolkit.port) would otherwise
+        // be the one environment whose surface configuration was silently ignored.
+        BridgeConfig cfg = BridgeConfig.load();
         int port;
         if (sysProp != null) {
             port = sysProp;
         } else {
-            BridgeConfig cfg = BridgeConfig.load();
             if (!cfg.enabled()) {
                 McpToolkit.LOGGER.info("[MCP Toolkit] bridge disabled via config/mcptoolkit.properties");
                 return;
@@ -90,6 +95,14 @@ public final class BridgeServer {
         }
         if (port <= 0) {
             return;
+        }
+        // The in-jar MCP server. Enabled with the bridge (it is the same port and the same
+        // authority), and turned off on its own with mcp.enabled=false or -Dmcptoolkit.mcp=false.
+        mcpEnabled = cfg.mcpEnabledWith(System.getProperty("mcptoolkit.mcp"));
+        if (mcpEnabled) {
+            com.mattmc.mcptoolkit.mcp.Surfaces.install(
+                Platform.configFile().resolveSibling(com.mattmc.mcptoolkit.mcp.Surfaces.CONFIG_FILE),
+                cfg.mcpSurface());
         }
         // The one call site that knows the port that actually governs, which is why the writer lives
         // here rather than in load(): with -Dmcptoolkit.port set — every Gradle dev run — load() is
@@ -166,6 +179,11 @@ public final class BridgeServer {
         return requestedPort;
     }
 
+    /** Whether this game serves its own MCP server at {@code /mcp} (mcp/McpEndpoint). */
+    public static boolean mcpEnabled() {
+        return mcpEnabled;
+    }
+
     /** How many times to retry binding the port, and the gap between attempts. */
     private static final int BIND_ATTEMPTS = 45;
     private static final long BIND_RETRY_MS = 2000;
@@ -186,6 +204,13 @@ public final class BridgeServer {
             h.createContext("/activity", BridgeServer::handleActivity);
             h.createContext("/humantask", BridgeServer::handleHumanTask);
             h.createContext("/review", BridgeServer::handleReview);
+            // The game's own MCP server, beside the private API rather than instead of it
+            // (mcp/McpEndpoint). Context matching is longest-prefix, so this one handler serves
+            // /mcp and every /mcp/<surface> under it.
+            if (mcpEnabled) {
+                h.createContext(com.mattmc.mcptoolkit.mcp.McpEndpoint.PATH,
+                    new com.mattmc.mcptoolkit.mcp.McpEndpoint());
+            }
             // Cached daemon pool (not the serial default executor, not a small fixed pool): a
             // get_events long-poll now parks its handler thread up to 60s, and parked pollers must
             // never queue other tool calls behind them. Localhost-only, so unbounded is safe.
@@ -199,6 +224,15 @@ public final class BridgeServer {
             boundPort = port;   // only now is it true
             Runtime.getRuntime().addShutdownHook(new Thread(BridgeServer::stop, "mcptoolkit-shutdown"));
             McpToolkit.LOGGER.info("[MCP Toolkit] bridge listening on http://127.0.0.1:{} (/cmd, /tools)", port);
+            if (mcpEnabled) {
+                // Said as the URL a person pastes into their client, because that is the whole
+                // feature: nothing else has to exist for this line to be usable.
+                McpToolkit.LOGGER.info("[MCP Toolkit] MCP server (in this jar, no shim needed): "
+                    + "http://127.0.0.1:{}/mcp — surface \"{}\", also {}", port,
+                    com.mattmc.mcptoolkit.mcp.Surfaces.installed().defaultName(),
+                    com.mattmc.mcptoolkit.mcp.Surfaces.installed().names().stream()
+                        .map(n -> "/mcp/" + n).collect(java.util.stream.Collectors.joining(", ")));
+            }
         } catch (java.net.BindException e) {
             // In dev, `runClient` spins up a short-lived bootstrap JVM alongside the real client; whichever
             // wins the bind holds the port until it exits. Retry so the long-lived process claims the port
@@ -311,9 +345,6 @@ public final class BridgeServer {
     }
 
     private static void handleCmd(final HttpExchange ex) throws IOException {
-        JsonObject out = new JsonObject();
-        ToolDef def = null;
-        JsonObject args = new JsonObject();
         // Session identity: the shim stamps every call with its id (env-inherited or /hello-minted).
         // Absent header = anonymous legacy caller; everything still works, just unattributed.
         String session = ex.getRequestHeaders().getFirst("X-MCPTK-Session");
@@ -328,15 +359,57 @@ public final class BridgeServer {
         if (profile != null && profile.isBlank()) {
             profile = null;
         }
+        // Before the body is parsed, as it always was: a call that arrives MALFORMED is still a
+        // caller proving it is alive, and moving the touch behind the parse (which is where
+        // execute() does it) would have quietly changed that for the older door. Touching twice is
+        // a timestamp written twice.
         Sessions.touch(session);
-        ToolContext ctx = requestContext(session, profile);
+        String tool = "";
+        JsonObject args = new JsonObject();
         try {
             String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
             JsonObject req = GSON.fromJson(body.isBlank() ? "{}" : body, JsonObject.class);
-            String tool = req.has("tool") ? req.get("tool").getAsString() : "";
+            tool = req.has("tool") ? req.get("tool").getAsString() : "";
             if (req.has("args") && req.get("args").isJsonObject()) {
                 args = req.getAsJsonObject("args");
             }
+        } catch (RuntimeException e) {
+            // A body that is not a request at all never reaches a tool, so there is nothing to audit
+            // and no mechanism to stamp — but the envelope is the same one, because a caller should
+            // not have to parse two failure shapes depending on how early it went wrong.
+            JsonObject bad = new JsonObject();
+            bad.addProperty("ok", false);
+            bad.addProperty("error", "malformed request body: " + e.getMessage());
+            respond(ex, 200, GSON.toJson(bad));
+            return;
+        }
+        respond(ex, 200, GSON.toJson(execute(tool, args, session, profile)));
+    }
+
+    /**
+     * <b>Run one tool and answer the dispatch envelope</b> — {@code {ok:true,result}} or
+     * {@code {ok:false,error}} — with every contract the toolkit enforces at dispatch: argument
+     * validation, intent recording, the loop hop and its timeout, the mechanism stamp, the embodied
+     * and client observation envelopes, the audit record, the oversize tripwire.
+     *
+     * <p><b>Public, and deliberately the ONLY way in.</b> There are two front doors now — the private
+     * {@code POST /cmd} the Node shim speaks, and the game's own MCP server ({@code mcp/McpEndpoint})
+     * — and every one of the contracts above is the kind that a second implementation would carry
+     * ninety percent of. A world edit that is unaudited because it arrived through the newer door is
+     * precisely the failure this method's existence prevents.
+     *
+     * @param session the caller's toolkit session id, for attribution and arbitration, or null
+     * @param profile the caller's declared role (the shim's profile; the MCP door passes its surface
+     *                name), which stream-level legality rules read
+     */
+    public static JsonObject execute(final String toolName, final JsonObject args,
+                                     final @Nullable String session, final @Nullable String profile) {
+        JsonObject out = new JsonObject();
+        ToolDef def = null;
+        Sessions.touch(session);
+        ToolContext ctx = requestContext(session, profile);
+        try {
+            String tool = toolName;
 
             def = McpTools.get(tool);
             if (def == null) {
@@ -425,7 +498,7 @@ public final class BridgeServer {
             out.addProperty("ok", false);
             out.addProperty("error", message);
         }
-        respond(ex, 200, GSON.toJson(out));
+        return out;
     }
 
     /**

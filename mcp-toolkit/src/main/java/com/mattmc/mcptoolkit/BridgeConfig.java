@@ -1,6 +1,7 @@
 package com.mattmc.mcptoolkit;
 
 import com.mattmc.mcptoolkit.platform.Platform;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -23,7 +24,7 @@ import java.util.Properties;
  * launched on 25641 writes {@code port=25641}, so the file states what is true and a later hand-run
  * without the JVM arg lands on the same port instead of silently colliding on the default.
  */
-public record BridgeConfig(boolean enabled, int port) {
+public record BridgeConfig(boolean enabled, int port, boolean mcpEnabled, String mcpSurface) {
 
     public static final int PRODUCTION_DEFAULT_PORT = 25600;
     public static final int DEV_DEFAULT_PORT = 25599;
@@ -48,6 +49,20 @@ public record BridgeConfig(boolean enabled, int port) {
         # program you run registers this MCP server in its own host and dials the port above. Write
         # that registration from in game with `/mmcp server register <your project directory>`, or
         # by hand: node <gameDir>/mcptoolkit/mcp-server/index.mjs with MCPTK_URL set to this bridge.
+
+        # THE OTHER DOOR: this game hosts an MCP server of its own, in the mod jar, at
+        # http://127.0.0.1:<the port above>/mcp — no Node, nothing to install, nothing to spawn.
+        # Point any MCP client that speaks Streamable HTTP straight at that URL. The trade is that
+        # it exists only while the game does (the Node shim above is there whether or not the game
+        # is) and that it serves the game's tools alone — no memory layer, no Blockbench.
+        # `/mmcp mcp` in game prints the URL and what each surface serves.
+        mcp.enabled=true
+
+        # Which surface http://127.0.0.1:<port>/mcp serves. Built in: full (everything this game
+        # registers), observe (reads only), modding (the modder's slice). Every surface is also
+        # reachable by name at /mcp/<name>, so this only names the default. Declare your own in
+        # config/mcptoolkit-surfaces.json.
+        mcp.surface=full
         """;
 
     /**
@@ -73,6 +88,25 @@ public record BridgeConfig(boolean enabled, int port) {
         }
     }
 
+    /**
+     * The in-jar MCP server's gate, with both of its sources in one place: {@code -Dmcptoolkit.mcp}
+     * wins over this file whenever it is set at all, and only the literal {@code false} closes the
+     * door.
+     *
+     * <p>That asymmetry is the deliberate half. A misspelt value leaves the door OPEN, because the
+     * failure a modder can diagnose is "the URL answers and I did not expect it to" — the other one
+     * is a connection refused with a live game behind it and nothing anywhere saying why.
+     *
+     * <p>Lives here rather than at its one call site in {@code BridgeServer} so that it can be
+     * asked as a question, with no JVM to set a property on and no game to boot.
+     *
+     * @param override the raw {@code mcptoolkit.mcp} system property, or null if it is not set
+     */
+    public boolean mcpEnabledWith(final @Nullable String override) {
+        String value = override == null ? String.valueOf(mcpEnabled) : override;
+        return !"false".equalsIgnoreCase(value.trim());
+    }
+
     public static BridgeConfig load() {
         boolean dev = Platform.isDevelopment();
         int defaultPort = dev ? DEV_DEFAULT_PORT : PRODUCTION_DEFAULT_PORT;
@@ -81,14 +115,14 @@ public record BridgeConfig(boolean enabled, int port) {
             // No write here. The file is written from init(), which is the only place that knows the
             // EFFECTIVE port; writing it here would have to guess, and in dev would guess wrong for
             // every project that declares a port of its own.
-            return new BridgeConfig(true, defaultPort);
+            return defaults(defaultPort);
         }
         Properties props = new Properties();
         try (InputStream in = Files.newInputStream(file)) {
             props.load(in);
         } catch (IOException e) {
             McpToolkit.LOGGER.warn("[MCP Toolkit] could not read {} ({}); using defaults", file, e.toString());
-            return new BridgeConfig(true, defaultPort);
+            return defaults(defaultPort);
         }
         boolean enabled = !"false".equalsIgnoreCase(props.getProperty("enabled", "true").trim());
         int port = defaultPort;
@@ -100,6 +134,26 @@ public record BridgeConfig(boolean enabled, int port) {
                 McpToolkit.LOGGER.warn("[MCP Toolkit] invalid port '{}' in {}; using {}", raw, file, defaultPort);
             }
         }
-        return new BridgeConfig(enabled, port);
+        // The in-jar MCP server rides the same file and the same on-by-default rule as the bridge —
+        // it is the same port and the same authority, reached by a different protocol. A file
+        // written before 0.146.0 has neither key, and inherits both defaults.
+        boolean mcp = !"false".equalsIgnoreCase(props.getProperty("mcp.enabled", "true").trim());
+        String surface = props.getProperty("mcp.surface", DEFAULT_MCP_SURFACE).trim();
+        if (surface.isEmpty()) {
+            surface = DEFAULT_MCP_SURFACE;
+        }
+        return new BridgeConfig(enabled, port, mcp, surface);
     }
+
+    /** The whole file's defaults, for when there is no file or it cannot be read. */
+    private static BridgeConfig defaults(final int port) {
+        return new BridgeConfig(true, port, true, DEFAULT_MCP_SURFACE);
+    }
+
+    /**
+     * The surface {@code /mcp} serves when the file names none. Spelled here rather than referenced
+     * from {@code mcp.Surfaces} so this class stays what it is — a properties reader with no opinion
+     * about what a surface means — and {@code Surfaces} validates the name it is handed anyway.
+     */
+    private static final String DEFAULT_MCP_SURFACE = "full";
 }

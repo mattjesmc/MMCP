@@ -106,6 +106,9 @@ public final class McpToolkit {
         // whole inbound path, and the only surface a headless probe can drive. The game never starts
         // an agent of its own (0.143.0 archived the launcher); it is registered IN one's workspace.
         com.mattmc.mcptoolkit.agent.AgentCommands.register();
+        // `/mmcp mcp` — the URL of this game's OWN MCP server and what each surface serves. The
+        // server itself is started by BridgeServer.init() below; this is only how a person finds it.
+        com.mattmc.mcptoolkit.mcp.McpCommands.register();
         // Extensions last, so a builtin name can never be shadowed, and before the bridge serves, so
         // the first manifest a session fetches is already complete.
         Extensions.discover();

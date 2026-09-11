@@ -5,15 +5,25 @@ localhost HTTP bridge into a running game and registers tools on it; an MCP serv
 for any MCP client. An agent then authors blocks, data, models, entities, structures, screens and
 worldgen against a game that is actually running, and reads back what it did.
 
-**Start at [`mcp-toolkit/README.md`](mcp-toolkit/README.md)**, which maps each task to the one
-document to read. [`mcp-toolkit/RELEASE.md`](mcp-toolkit/RELEASE.md) is the release ledger: what
+**If you are a person, start at [`wiki/`](wiki/README.md)** - one page per kind of modding work,
+each with an overview, a walkthrough, an example agent session and the traps that cost us the time.
+**If you are an agent, start at [`mcp-toolkit/README.md`](mcp-toolkit/README.md)**, which maps each
+task to the one document to read. [`mcp-toolkit/RELEASE.md`](mcp-toolkit/RELEASE.md) is the release ledger: what
 ships, what has been verified on the code that ships, and what is still open - and where a claim
 rests on a test log, it names the log.
 
-This is **release 1**: toolkit 0.145.0, MCP server 0.73.0, convention plugin 0.7.0, Minecraft 26.2.
-The whole probe battery was run at this version on both loader arms on 2026-09-10 - 108 files, 903
-pass / 0 fail without fabric-api and 901 / 8 with it, the eight being two probes that had outlived
-their subject, and the two arms agree file for file (`RELEASE.md` 2.8 and 2.9).
+This is **release 2**: toolkit 0.146.0, MCP server 0.73.0, convention plugin 0.7.0, Minecraft 26.2.
+**The game now speaks MCP itself.** `POST http://127.0.0.1:<port>/mcp` is an MCP server hosted in the
+mod jar - no Node, nothing to install, nothing to spawn: point any client that speaks MCP over HTTP
+straight at that URL, and `/mcp/<surface>` chooses which slice of the tools it gets. Type `/mmcp mcp`
+in game and it prints the address and the line that registers it. The Node server is unchanged and
+remains the fuller path, because it is there whether or not the game is
+(`mcp-toolkit/docs/platform/IN_JAR_MCP_DESIGN.md` has the table).
+
+The whole probe battery was re-run at this version on 2026-09-11 - 109 files, 916 pass / 1 fail, the
+one red green on an isolated rerun - and **107 of the 108 files it shares with release 1's battery
+scored identically**, which is the evidence that this version changed nothing it did not mean to
+(`RELEASE.md` 2.10; 2.8 and 2.9 are release 1's two loader arms, 108 files, 903/0 and 901/8).
 
 ## License, in short
 
@@ -52,7 +62,10 @@ This directory is a WORKBENCH, not a monorepo: several independent Gradle build 
 one convention plugin and one local Maven repository. The product is the **MCP Toolkit**;
 everything else here builds it, tests it, or was its first customer.
 
-**Start at `mcp-toolkit/README.md`.** It maps each task to the one document or section to read.
+**If you are a person, start at [`wiki/`](wiki/README.md)** — one page per kind of modding work,
+each with an overview, a walkthrough, an example agent session and the traps.
+**If you are an agent, start at `mcp-toolkit/README.md`** — it maps each task to the one document or
+section to read.
 
 ## What is here
 
@@ -62,6 +75,7 @@ everything else here builds it, tests it, or was its first customer.
 | `mcp-server/` | The MCP server (Node) that fronts that bridge for any MCP client: proxies the tool manifest, adds profiles, per-world memory, the image budget and the loop kit. | `mcp-server/README.md` |
 | `gradle-conventions/` | The `com.mattmc.mcmod` Gradle plugin every mod in the workspace applies: pins Minecraft, loader, Fabric API and toolkit versions, wires the optional bridge into `runClient`, adds `generateUi`, `checkUi`, `toolkitStatus`, `modpageBuild`. | comment block at the top of `src/main/groovy/com.mattmc.mcmod.gradle` |
 | `tools/` | Workbench scripts: the rebuild cycle, the process reaper, the live probe battery, vanilla-source extraction, the production-client launcher. | `tools/README.md` |
+| `wiki/` | The human-facing manual: one page per kind of modding work (blocks, textures, entities, data, screens, structures, worldgen, testing, debugging, scale, extending, servers), each with an overview and index, a walkthrough, an example agent session and the traps. It links into the three manuals rather than restating them. | `wiki/README.md` |
 | `spike-neoforge/` | The workspace's only NeoForge build, kept as the one place four cross-loader facts can be checked. In no `settings.gradle` but its own. | `spike-neoforge/README.md` |
 | `world-model/` (untracked) | A separate research repository (its own git), nested here and ignored by this one. Compiled into the toolkit but off by default and not part of the developer release. | `world-model/DESIGN.md` |
 | `vanilla-src/` (untracked) | Decompiled Minecraft, produced by `tools/extract-vanilla-src.ps1` so vanilla source can be grepped. Grep it; never guess an API shape. | - |

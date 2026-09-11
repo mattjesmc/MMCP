@@ -6,6 +6,102 @@ and nothing else about an entry changed - the prose is as it was written on the 
 citations by bare filename (`docs/README.md` maps them). A new version gets a new `##` section at the
 top; the mcp-server (shim) version it ships with is named inside the entry when it changed.
 
+## 0.146.0
+
+**THE GAME SPEAKS MCP NOW, ON A DOOR OF ITS OWN.** `POST http://127.0.0.1:<bridge port>/mcp` is an
+MCP server hosted in this jar: no Node, no `npm install`, no extracted copy of anything, no process
+for a client to spawn and hold. Point any client that speaks MCP over HTTP at that URL and it is
+talking to the running game. `docs/platform/IN_JAR_MCP_DESIGN.md`.
+
+**The Node shim and the private `/tools` + `/cmd` API are untouched and remain the supported path.**
+They have to be: an MCP client spawns its servers when the CLIENT starts, which is routinely when
+Minecraft is not running, and only a process that outlives the game can be there to be spawned and
+serve its local tools honestly while the game is down. The new door cannot do that and never will —
+if the game is not running, there is nothing to connect to. What it buys instead is that **nothing
+has to be installed for it**, that **there is no second copy to go stale** (the 2026-08-10 finding
+was a deployed 0.63.0 shim against a 0.69.0 game, leaking six dev tools into a restricted profile for
+weeks — on this door the tools ARE the running registry), and one thing the old door could not do at
+all.
+
+**That one thing: a port that carries a surface.** `ARCHITECTURE.md` has said since 0.107.0 that it
+could not — "the port serves the whole manifest over a private API, and the profile belongs to the
+shim process a session starts" — and named the price of fixing it: an MCP server in the JVM, the
+slicing moved into Java, and the shim-only layers left behind. That is exactly what this is, clause
+by clause. **The URL is the surface**: `/mcp` serves the configured default, `/mcp/observe` serves
+the reads. Three built-ins and only one of them is a list — `full` is the registry, `observe` is
+COMPUTED from the `Mechanism` stamp every tool already carries (so a read that ships tomorrow is in
+it and nothing has to be maintained), and `modding` is an allow-list seeded from the shim's
+`MODDING_KEEP` and independent from that date on. A project declares its own in
+`config/mcptoolkit-surfaces.json`, where a declared surface INTERSECTS its base's keep-list rather
+than replacing it: "base modding, keep these four" must never be a way to get a tool modding does not
+serve.
+
+**What does not come through the new door**, and it is a limitation rather than an oversight: the
+`mem_*` memory layer, `bot_scan`, `launch_game`, `tool_surface`, the Blockbench upstream, the image
+budget, the loop-file gate, the route ledger. Those are per-session policy and a second upstream —
+the business of a process a session starts, not of the game. A model is told which door it is on, in
+the `instructions` it meets at initialize.
+
+**`BridgeServer.execute` was extracted first, and the endpoint built second.** Both doors enter
+dispatch at the same chokepoint, so argument checking, the intent record, the loop hop and its
+timeout, the mechanism stamp, the embodied and client envelopes, **the audit record** and the
+oversize tripwire are one implementation and not two. A world edit that arrives unaudited because it
+came through the newer door is precisely what a second implementation would have produced, silently.
+
+Decisions that are worth the line, each of them the honest answer rather than the cautious one:
+`tools.listChanged` is declared **false** (the registry is filled during mod init and nothing adds a
+tool to a running game — the shim declares it true because the shim's list really does change), so
+`GET /mcp` answers 405 rather than opening a stream that would never carry anything. A failed tool
+call is a **result** with `isError:true`, never a JSON-RPC error: the refusal is the answer and the
+model is the one that has to read it. A cancellation is accepted and ignored, because a handler on a
+game loop stopped half-way is how a world edit lands in pieces. A POST with no session id that is not
+`initialize` is served and handed one — out of order by the spec, and exactly what a person with
+`curl` does. An `Origin` that is not loopback is refused outright, which is the spec's DNS-rebinding
+rule and what stops a page the human has open from driving their game.
+
+`mcp.enabled=true` and `mcp.surface=full` in `config/mcptoolkit.properties` (a file written before
+this version has neither key and inherits both). `/mmcp mcp` in game prints the URL, the surfaces
+with LIVE tool counts — the only check a keep-list gets — and the `claude mcp add` line.
+
+77 new unit tests, `McpTransportTest` among them driving a real socket through initialize →
+notification (202) → list → call → DELETE → 404, and **two clients at once** — two transport ids, two
+surfaces, two toolkit sessions, and a DELETE that takes exactly its own. `McpConn`'s 30-minute idle
+reap is asked against a stated clock rather than left to a wall clock nobody will wait out;
+`Surfaces.install` writes its documented default and that file is then read back through this
+parser, which is the only way the shipped text can be wrong and somebody find out before their
+second boot; `BridgeConfig` has a test at last (`Platform.install` is the seam the class's own note
+said it lacked), covering what a pre-0.146.0 file inherits and whether the commented default states
+what `load()` reads back; and `/mmcp mcp`'s text moved out of Minecraft into `McpReport`, so the
+per-surface count — the only check a keep-list ever gets — is asserted against a registry rather than
+read off a screen once. **And RUN LIVE** against `gradlew runServer`
+(`IN_JAR_MCP_DESIGN.md` section 9): 73 tools at `/mcp`, 31 at `/mcp/observe`, `ping` answering out of
+the real instance, `ArgCheck` refusing a bad call through the new door with the same message `/cmd`
+gives, and an `audit` event carrying the toolkit session the door minted — the two claims above that
+are worth more than an assertion. The server was stopped through the door it was being tested on.
+The live run also changed the code once: a sessionless POST no longer mints a toolkit session (five
+probing `curl`s had left five live "clients" in `/mmcp mcp`), because an anonymous caller should stay
+anonymous rather than leave an entry the reapers believe in. What is still owed is a real client's
+handshake rather than `curl` shaped like one.
+
+**And the door is now WATCHED.** All 110 probe files in the suite drive `/cmd`, so a regression in
+`/mcp` would have reached a release with a green battery — there was nothing for it to land on.
+`probes/in-jar-mcp.test.mjs` (14 tests, green, declared into `battery.ps1` chunk b on the day it was
+written) runs the handshake, the three surfaces, the shared chokepoint and the transport rules live
+and without the shim. `observe` is checked against `GET /tools` in both directions, which is the
+check a computed surface can have and a keep-list cannot. The old door was re-checked after its
+dispatch path was split — `arg-check`, `event-stream`, `attach-identity`, `headless-surface`,
+`context-column` (28/28) and `conformance` (44 pass, 6 client-skipped) — and `Sessions.touch` was
+moved back ahead of body parsing in `handleCmd`, so a malformed `/cmd` body still refreshes liveness
+exactly as it did before.
+
+**And the full battery was re-run on it** (`RELEASE.md` §2.10): **109 files, 916 pass / 1 fail**, one
+part, 29 minutes, same save and same loader-only arm as the 0.145.0 release battery, with
+`in-jar-mcp` green at 14/0 inside it. **107 of the 108 files shared with that run scored identically**
+— the first evidence that this version changed nothing it did not mean to. The one red,
+`render-camera`'s "the player is put back where they were standing", was 17/0 alone afterwards; its
+restore assertion passed and nothing here touches rendering, so §2.10 records it as undiagnosed
+rather than explained.
+
 ## 0.145.0
 
 **A WINDOW IS TAKEN WHEN THERE IS WORK, NOT WHEN A SESSION WAKES UP** (shim 0.73.0, plugin 0.9.0).

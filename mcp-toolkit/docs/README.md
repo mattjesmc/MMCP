@@ -28,6 +28,7 @@ each task to the section to read. Every record opens with a status line and ends
 - `LOOP_KIT_DESIGN.md` - what ArmorPieces measured, the loop taken apart, the kit (loop file, gate, profile, image budget, batch painters); sections 8-11 as built, tested live and falsified by ArmorPieces' next part (0.122.0 to 0.124.0). The how-to is `guides/LOOPS.md`.
 
 ## platform/ - loaders, the extension seam, agent clients, profiles, sessions
+- `IN_JAR_MCP_DESIGN.md` - **the game's own MCP server** (0.146.0): `POST http://127.0.0.1:<port>/mcp`, in the jar, with no Node and nothing to install. Why the shim stays anyway, what does not come through the new door, and the one thing only it can do - a URL that names its tool surface.
 - `CROSS_LOADER_DESIGN.md` - one jar for Fabric and NeoForge, dev and production; sections 12-16 as proven.
 - `HEADLESS.md` - GENERATED (`tools/headless-doc.mjs`): every tool's execution context, the table a dedicated-server suite is written against (0.129.0).
 - `EXTENSION_DESIGN.md` - the third-party tools and modded-data seam that `../EXTENDING.md` documents.

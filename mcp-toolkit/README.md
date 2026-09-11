@@ -6,7 +6,14 @@ One mod jar (Fabric and NeoForge, dev and production) that opens a localhost HTT
 running game and registers tools on it. Through `../mcp-server/`, any MCP client drives those tools:
 read the world, edit it transactionally, push assets and data live, hotswap classes, stage entities
 from Blockbench, author screens as documents, capture and place structures, preview worldgen, and
-run authoring loops at scale. Toolkit 0.145.0, mcp-server 0.73.0, convention plugin 0.7.0.
+run authoring loops at scale. Toolkit 0.146.0, mcp-server 0.73.0, convention plugin 0.7.0.
+
+Since 0.146.0 **the jar also hosts an MCP server of its own**, at
+`http://127.0.0.1:<port>/mcp` - no Node, nothing to install, nothing to spawn: point any client that
+speaks MCP over HTTP straight at that URL, and `/mcp/<surface>` chooses which slice of the tools it
+gets. It exists only while the game does and serves the game's tools alone, which is why
+`../mcp-server/` is still the fuller path and still the supported one -
+`docs/platform/IN_JAR_MCP_DESIGN.md` has the table.
 
 The bridge binds `127.0.0.1` only and is on automatically in Gradle dev runs (`ping` reports the
 port). Any local process can drive the game: that is the trust model, and there is no permission
@@ -33,7 +40,8 @@ If you are unsure which side of a line you are on, that is a question and not a 
 
 ## Install
 
-Two prerequisites: **JDK 25** and **Node 18 or newer**. Then one of three paths.
+Two prerequisites: **JDK 25** and **Node 18 or newer** (Node is for `../mcp-server/`; the jar's own
+MCP server at `/mcp` needs none). Then one of three paths.
 
 In the game itself the jar needs **Fabric Loader 0.19.3+** (or NeoForge) and nothing else: **fabric-api
 is not a dependency** - `fabric.mod.json` declares only the loader, Minecraft and Java, and the
@@ -70,6 +78,44 @@ into the source tree, once) and `checkAssets` (under `check`).
 path. After a structural Java change run `../tools/rebuild.ps1`; never `gradlew build` while the
 game is running.
 
+**Starting the jar's own MCP server: you don't - you ask the game for its address.** There is nothing
+to install, nothing to spawn and nothing to switch on: `/mcp` is served by the bridge, so it is
+already listening in any game where `ping` answers. What you need is the URL, and the game will tell
+you. In game, type:
+
+```
+/mmcp mcp
+```
+
+It prints the address, the one line that registers it, every surface with the number of tools it is
+serving **right now**, and how many clients are connected:
+
+```
+http://127.0.0.1:25599/mcp   (surface "full")
+add it to a client that speaks MCP over HTTP, e.g.  claude mcp add --transport http mcptoolkit http://127.0.0.1:25599/mcp
+/mcp/full     73 tool(s)  every tool this game registers
+/mcp/observe  31 tool(s)  every tool whose mechanism is observe: reads, and nothing that acts
+/mcp/modding  35 tool(s)  the modder's slice: author blocks, data, structures and assets ...
+no client is connected to it right now
+```
+
+Paste that `claude mcp add` line (or the equivalent for your client - any client that speaks MCP over
+Streamable HTTP will do) and it is talking to the game you are standing in. **The URL is the
+surface**: dial `/mcp/observe` instead and the client gets the reads and nothing that can act,
+decided by the `mechanism` every tool already carries rather than by a list somebody maintains.
+Declare your own slice in `config/mcptoolkit-surfaces.json` and dial it by name.
+
+Two things it will tell you rather than fail silently. If `/mmcp mcp` says the bridge is **NOT
+BOUND**, another game on this machine holds the port - it names the port it asked for, and
+`tools/dev-procs.ps1` names who has it. If it says the server is **OFF**, that is `mcp.enabled=false`
+in `config/mcptoolkit.properties` or `-Dmcptoolkit.mcp=false` on the command line.
+
+The trade, so it is not a surprise later: this door exists only while the game does, and it serves
+this game's tools alone - no memory layer, no Blockbench, no profile switching mid-session. When you
+want those, register `../mcp-server/` instead (`/mmcp server register <your project directory>` writes
+that registration for you). `docs/platform/IN_JAR_MCP_DESIGN.md` has the table of what each door
+carries.
+
 **Where the jar and the plugin come from.** Release 1 is served from a static Maven (a `maven`
 branch of this repository served by GitHub Pages, plus a GitHub Release of the jar for a production
 `mods/` folder) - `gradlew publishAllPublicationsToStaticRepository -Pmaven_repo=<checkout>` in
@@ -104,9 +150,10 @@ call that widens it.
 | Author MANY units of one kind (parts, skins, screens, rooms) with a model, cheaply | `docs/guides/LOOPS.md`; then `tools/loop/` (agent template, `run-unit.ps1`, `analyse.mjs`) | `.mcptoolkit/loop.json`; `MCPTK_SHOT_MAX`; `paint_faces`, `paint_ascii` |
 | Add your mod's own tools, or teach the toolkit about your modded data | `EXTENDING.md`: Quickstart; The contract; Modded data recognition | `McpToolkitEntrypoint` |
 | Build an editor for your mod's content on the toolkit | `EXTENDING.md`: Building an editor on the toolkit | `run_command` first, a tool entry last |
-| Queue something for a human to look at | `EXTENDING.md`: Asking a human; `ARCHITECTURE.md`: The review layer | `review_post`, `review_status`, `/review` in game |
+| Queue something for a human to look at | `EXTENDING.md`: Asking a human; `ARCHITECTURE.md`: The review layer | `review_post`, `review_status`, `/mmcp review` in game |
 | Start an agent session in YOUR mod repository, and tell it what to believe | `docs/guides/SESSION_CHARTER.md` (paste into the repo's `CLAUDE.md`) | `ping`, `launch_game`, `tool_surface` |
 | Attach an agent client other than Claude Code | `docs/guides/ADAPTER.md` | `AgentClient` |
+| Connect a client with nothing installed - no Node, no extract, no spawned process | `docs/platform/IN_JAR_MCP_DESIGN.md` sections 2, 4, 8 | `/mmcp mcp` in game; `claude mcp add --transport http mcptoolkit http://127.0.0.1:<port>/mcp`; `/mcp/<surface>`; `config/mcptoolkit-surfaces.json` |
 | Choose what a session sees (profiles) and what each tool costs per turn | `../mcp-server/README.md`: `MCPTK_PROFILE`; `docs/platform/TOOL_BILL_PLAN.md` section 4 | `MCPTK_PROFILE`, `tool_surface`, the `profile` block of `ping` |
 | Ship on NeoForge, or attach to a production (launcher) game | `docs/platform/CROSS_LOADER_DESIGN.md` sections 12-16; `LIVE_MODDING.md`: Two working modes; Attaching to a normal game | `-Dmcptoolkit.port` |
 | Several sessions on one game, headless companions, chat routing | `ARCHITECTURE.md`: Sessions; `docs/platform/COMPANION_REDESIGN.md` | `session_list`, `session_send`, `companion_spawn` |
@@ -137,6 +184,9 @@ call that widens it.
 
 ## Reading the documents
 
+- **`../wiki/` is the human-facing manual**, organised by what a modder is trying to do rather than
+  by tool. It teaches shape and links here for exact detail; nothing in it restates a table these
+  documents own. Send a person there; the table above is for a session.
 - The three manuals live here: `LIVE_MODDING.md` (workflow), `EXTENDING.md` (API),
   `ARCHITECTURE.md` (vocabulary and decisions). `RELEASE.md` is the release ledger; the plan it
   was cut from (`RELEASE_1.md`) and the backlog beside it (`TODO.md`) are in the workbench's

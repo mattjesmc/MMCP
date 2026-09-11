@@ -14,7 +14,7 @@ plugins {
 // THE CHANGELOG IS CHANGELOG.md (moved out of this file 2026-09-06, RELEASE_1.md section G):
 // one `## x.y.z` section per version, newest first. Every version bump here gets its entry there.
 
-version = '0.145.0'
+version = '0.146.0'
 group = 'com.mattmc.mcptoolkit'
 
 base {

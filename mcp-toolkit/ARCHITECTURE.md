@@ -28,8 +28,16 @@ primarily to extend a human player rather than imitate one.
 
 ## Where MCP actually lives (the split, stated plainly)
 
-**The game does not speak MCP.** This is the first thing to know about the shape of the toolkit, and
-it is easy to assume otherwise because the mod ships the MCP server inside its own jar.
+> **AMENDED 0.146.0: the game speaks MCP too now, on a second door** — `POST
+> http://127.0.0.1:<port>/mcp`, served from the jar with no Node and nothing to install
+> (`docs/platform/IN_JAR_MCP_DESIGN.md`). Everything below is still true of the *shim* door, which is
+> unchanged and remains the supported path, and the paragraph at the end of this section ("the
+> consequence, when someone asks for a port that carries a profile") is the design the new door was
+> built to, clause by clause — including which layers do not come along.
+
+**The game does not speak MCP** *on the port the shim dials.* This is the first thing to know about
+the shape of the toolkit, and it is easy to assume otherwise because the mod ships the MCP server
+inside its own jar.
 
 | | In the JVM (the mod) | In the Node shim (`mcp-server/`) |
 |---|---|---|

@@ -341,6 +341,59 @@ says the arms take different doors - so this may be a real consequence of that d
 be incidental to what the previous session left in `level.dat`. It cost one `click`. Reproduce it
 before calling it anything.
 
+### 2.10 The whole battery at 0.146.0 (2026-09-11) - the second door's first one
+
+**109 files, 916 pass / 1 fail. One part, 29 minutes, no restarts, nothing killed from outside.**
+Logs `sequential-0.73.0-0.146.0-part1.log` (the run), `-part2.log` (the gated `create-world` retry)
+and `-rerun.log` (the one red, alone). Same client, same save (`New World`,
+`world_uuid 5d154361-6bff-40fe-8404-4ff3f28d8c52`, `seed_hash dc496a75e07624e4` - the identity 2.9
+records only by reference, written out here so the next run can check it rather than infer it), same
+port, same minimized window, same loader-only arm as 2.9. Host verified quiet first
+(`dev-procs.ps1`: no bridge, no dev JVM, no Gradle daemon). The client parked on
+`BackupConfirmScreen` opening the save, exactly as 2.9 reported - **so that divergence reproduces,
+and is a property of this save on this arm rather than of what one session left in `level.dat`.**
+One click, same as then.
+
+**On the log names.** The battery names its logs by the SHIM version, and shim 0.73.0 already had
+`part1`/`part2` from 2.9. A plain `battery-resume.ps1` would have read those as this run's verdicts
+and run one file. This run is tagged `-Version 0.73.0-0.146.0`, which scores all 109 from zero and
+names the toolkit version the run is actually about. The collision is inherent to naming a run after
+the shim when the thing under test is the jar; it is recorded rather than fixed.
+
+**THE TWO RUNS AGREE FILE FOR FILE.** Compared verdict by verdict against 2.9, **107 of 108 shared
+files have an identical pass count**, and both differences are accounted for:
+
+| File | 0.145.0 (2.9) | 0.146.0 | Why |
+|---|---|---|---|
+| `in-jar-mcp` | - | **14/0** | the new file. THE SECOND DOOR IS WATCHED NOW: until it, a regression in `/mcp` had nothing red to land on, because all 108 other probes drive `/cmd`. |
+| `render-camera` | 17/0 | 16/1 | below |
+
+916 - 903 = +14 - 1, which closes.
+
+**The one red, and what is actually known about it.** `render-camera` case "the player is put back
+where they were standing", **17/0 alone ten minutes later** (`-rerun.log`).
+
+- **The restore itself passed.** That case's FIRST assertion - two renders in a row report the same
+  standing position - held. The `finally` put the player back; it is the second assertion that went.
+- **What went**: the player was at y **80.966**, 0.97 of a block above the y=80 that `before()` tp'd
+  them to, at the staging column exactly (`-4095.5, -4095.5`).
+- **The message names something that does not exist.** "the player is not on the platform any more"
+  - there is no platform. Read after the run, the studio at the staging column is **45 of 45 air**
+  from y78 to y82, and the file's only staging is a wall at y>=94 (`SY+14`). What the assertion
+  actually checks is "still at the height setup put them", which is a different sentence and a
+  better one. Owed: that message. Not changed here, because a probe edited after the run it is cited
+  in makes the log and the file disagree.
+- **Undiagnosed.** The candidate is the case immediately before it - the only place in the whole
+  battery that minimizes the real window and restores it, which activates it - leaving the player a
+  block high or mid-settle for the next case. Nothing in this version's diff touches rendering, the
+  camera, or a player position, and the same file was 17/0 on this save yesterday and 17/0 alone
+  today. Reproduce it before calling it anything.
+
+`create-world` is 0/0 in both parts: the gate (`MCPTK_PROBE_CREATE_WORLD`, title screen), not a
+verdict - the same 0/0 it gives in 2.9. `wm_session_tag` was refused all run because this game has
+the world-model recorder off, so the session stays untagged; untagged reads as adhoc, which is out of
+corpus either way, and the tag is best-effort by construction.
+
 ### 2.1 What that table says
 
 **The whole battery ran at 0.124.0 on 2026-09-06**: 101 files, 845 pass / 24 fail, on a dev client

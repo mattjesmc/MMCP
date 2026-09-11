@@ -54,6 +54,19 @@ public final class McpTools {
     }
 
     /**
+     * Every registered tool, in registration order. Public because the in-JVM MCP server
+     * ({@code mcp/McpEndpoint}) builds its {@code tools/list} from the registry itself rather than
+     * from the serialized manifest — it needs the {@link ToolDef}s, since a surface decides
+     * membership on the {@link Mechanism} stamp as well as the name.
+     *
+     * <p>Unmodifiable, and a view rather than a copy: registration is over by the time anything can
+     * read this (mod init, before the bridge binds), so there is nothing to guard against.
+     */
+    public static java.util.Collection<ToolDef> all() {
+        return java.util.Collections.unmodifiableCollection(TOOLS.values());
+    }
+
+    /**
      * The manifest served at {@code GET /tools}: {@code [{name, description, mechanism, context,
      * inputSchema}]} in order, each extension tool additionally carrying {@code source} (the owning
      * mod id). {@code context} is the {@link ExecutionContext} lower-cased - the column a headless
