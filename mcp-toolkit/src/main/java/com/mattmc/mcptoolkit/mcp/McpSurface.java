@@ -33,6 +33,15 @@ import java.util.Set;
  * everything", empty means "an allow-list naming nothing", which serves nothing. The config loader
  * keeps that distinction rather than folding it, so a file that writes {@code "keep": []} gets the
  * empty surface it literally asked for instead of quietly getting everything.
+ *
+ * <p><b>{@code legal} is declared, never inferred from the name.</b> The surface name travels to
+ * {@code BridgeServer.execute} in the parameter the shim fills with its profile, and for one release
+ * that meant a surface called {@code survival} silently acquired the research profile's
+ * player-legality rules — {@code check_path} knowledge-masked, {@code audit} rows withheld — because
+ * {@code ToolContext.legal()} was a string comparison against that one word. An operator naming a
+ * surface after the game mode they play is not asking for any of that, and there was no way to ask
+ * for it ON PURPOSE either. So it is a field: {@code "legal": true} in the config file, and the name
+ * means nothing but the URL it is addressed at.
  */
 public record McpSurface(
     String name,
@@ -40,7 +49,8 @@ public record McpSurface(
     @Nullable Set<String> keep,
     Set<String> hide,
     @Nullable Set<Mechanism> mechanisms,
-    @Nullable String instructions
+    @Nullable String instructions,
+    boolean legal
 ) {
     public McpSurface {
         keep = keep == null ? null : Set.copyOf(keep);
@@ -50,7 +60,7 @@ public record McpSurface(
 
     /** Everything the registry holds. */
     public static McpSurface all(final String name, final String description) {
-        return new McpSurface(name, description, null, Set.of(), null, null);
+        return new McpSurface(name, description, null, Set.of(), null, null, false);
     }
 
     /** Whether this surface serves that tool. */
@@ -66,6 +76,6 @@ public record McpSurface(
 
     /** The same surface with different instructions — how the config file's {@code instructions} lands. */
     public McpSurface withInstructions(final @Nullable String text) {
-        return new McpSurface(name, description, keep, hide, mechanisms, text);
+        return new McpSurface(name, description, keep, hide, mechanisms, text, legal);
     }
 }

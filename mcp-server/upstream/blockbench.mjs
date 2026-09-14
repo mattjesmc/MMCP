@@ -28,6 +28,7 @@
 // Names still pass through UNPREFIXED. The plugin's 26 names were checked against the bridge
 // manifest captures: zero collisions; buildToolList still drops a colliding entry and says so.
 
+import { isAbsolute, resolve as resolvePath } from "node:path";
 import http from "node:http";
 import { BASE as GAME_URL } from "../bridge-base.mjs";
 
@@ -78,6 +79,8 @@ const LIST_TIMEOUT_MS = 8_000;
 // A window either answers on localhost at once or is not there. Short on purpose: the scan is
 // PORT_SPAN of these in parallel, in front of a tool-list poll that a client is waiting on.
 const HELLO_TIMEOUT_MS = 1_000;
+// How long POST /window may take to answer - see askForWindow.
+const ASK_TIMEOUT_MS = 45_000;
 // How long a window asked for is waited for. A Blockbench window opens in a second or two; the
 // ceiling is here so that a window that will never come (autostart off, a refused permission) costs
 // one slow poll and then the sharing fallback, rather than a client sitting on a dead list request.
@@ -93,7 +96,7 @@ const EMPTY_RESCAN_MS = 15_000;
 // permission dialog the old plugin's first fs write popped - is gone (the plugin never opens one
 // by itself), but Blockbench can still be mid-dialog for a human's own reasons, so the message on
 // a timeout still says where to look.
-const CALL_TIMEOUT_MS = 120_000;
+const CALL_TIMEOUT_MS = Number(process.env.MCPTK_BLOCKBENCH_CALL_TIMEOUT_MS) > 0 ? Number(process.env.MCPTK_BLOCKBENCH_CALL_TIMEOUT_MS) : 120_000;
 
 // Who this shim is to the plugin. MCPTK_SESSION is the id the game bridge minted when there is
 // one, and an explicit one still wins, for deliberate sharing. Otherwise the PARENT process id -
@@ -104,7 +107,15 @@ const CALL_TIMEOUT_MS = 120_000;
 // on the id. The prefix is deliberately NOT per-server for the same reason - the two must compute
 // the same string - and `client` below is what says which of a session's servers is calling.
 // `docs/models/BLOCKBENCH_ISOLATION_DESIGN.md` section 6.1.
-const SESSION_ID = (process.env.MCPTK_SESSION ?? "").trim() || `mcptk-${process.ppid}`;
+//
+// MCPTK_BLOCKBENCH_SESSION outranks both (0.77.0): under the daemon (daemon.mjs) every shim is a
+// CHILD OF THE DAEMON, so `mcptk-<ppid>` would name the same window owner for every session on the
+// machine - the inherited-identity failure ArmorPieces measured, arrived at from the other side. The
+// daemon hands each child its own session id, which is also what its Blockbench instance was told
+// to accept claims from. MCPTK_SESSION is left alone on purpose: that is the GAME bridge's id, and
+// presetting it would skip the /hello that declares the client.
+const SESSION_ID = (process.env.MCPTK_BLOCKBENCH_SESSION ?? "").trim()
+  || (process.env.MCPTK_SESSION ?? "").trim() || `mcptk-${process.ppid}`;
 const CLIENT = (process.env.MCPTK_CLIENT ?? "").trim() || null;
 let profileName = null;
 /** index.mjs tells the adapter which profile it serves, so the plugin's status can show it. */
@@ -166,6 +177,32 @@ let windowState = null; // {base, port, window, claimed, claimable, shared}
 let sharedNoted = false;
 /** When the last scan came back empty, so an unopened Blockbench is not swept for every 3 seconds. */
 let lastEmptyScan = 0;
+/**
+ * THE WINDOW THIS SESSION LOST, and how (BLOCKBENCH_ISOLATION_DESIGN.md section 13). A claim steers
+ * discovery and nothing else, so until shim 0.75.0 nothing a person did to a window - the dock's
+ * Take back, a recycle after fifteen idle minutes, Stop the bridge - reached the session in it: this
+ * adapter kept its cached `windowState`, kept calling into the window, and `ping` went on answering
+ * `held: "this session"` out of that cache. The plugin now SAYS it, on two routes this adapter
+ * already has: a `window` note on every `/cmd` reply from a window whose holder is not this session,
+ * and one last line on the presence socket before it is closed. Both land here: the window is
+ * forgotten, presence closed, and the sentence kept for the reply the agent reads and for `ping`.
+ */
+let lastLoss = null; // {port, window, held_by, reason, note, at}
+function loseWindow(note, how) {
+  const w = windowState;
+  lastLoss = {
+    port: note?.port ?? w?.port ?? null, window: note?.window ?? w?.window ?? null,
+    held_by: note?.held_by ?? null, reason: note?.reason ?? how ?? "lost",
+    note: note?.note ?? `window ${w?.window ?? "?"} (port ${w?.port ?? "?"}) is no longer this session's`,
+    at: Date.now(),
+  };
+  windowState = null;
+  closeBlockbenchPresence();
+  process.stderr.write(`[mcp-toolkit] blockbench: ${lastLoss.note}\n`);
+  return lastLoss;
+}
+/** What `ping` says about a window this session no longer has: the last loss, or null. */
+export function blockbenchLost() { return lastLoss; }
 /** Where calls go. The resolved window while there is one, else the configured base. */
 const baseUrl = () => windowState?.base ?? BLOCKBENCH_URL;
 /** For a message: the one window when it is known, and the range that was searched when it is not. */
@@ -250,6 +287,8 @@ function use(w, extra) {
   // to the new one only by its `seen` clock. Drop it here; the next good poll reopens it in place.
   if (presenceState !== "closed" && presenceBase && presenceBase !== w.base) closeBlockbenchPresence();
   windowState = { base: w.base, port: w.port, window: w.hello.window ?? null, claimable: !!w.hello.window, claimed: false, shared: false, ...extra };
+  // A window of our own again: the loss is history, and `ping` stops reporting it.
+  lastLoss = null;
   return windowState;
 }
 /**
@@ -318,11 +357,39 @@ async function askForWindow(found) {
   try {
     const res = await fetch(`${asker.base}/window`, {
       method: "POST", headers: headers(), body: JSON.stringify({ session: blockbenchSession() }),
-      signal: AbortSignal.timeout(HELLO_TIMEOUT_MS * 4),
+      // ASKING IS NOT A HELLO. The plugin's `openWindow` scans its whole range (sequentially, at its
+      // own reach timeout per port), tries to hand over an empty agent window, and only then clicks
+      // New Window - measured 12 s and 40 s on 2026-09-13 with three occluded windows in the range
+      // (an occluded window answers in ~2 s, past every scanner's timeout). At 4 x HELLO this fetch
+      // gave up every time while the plugin went on and opened the window anyway: the worst of both,
+      // a session that shares AND an orphan nobody can find. Wait for the answer; there is nothing
+      // else to do until it comes.
+      signal: AbortSignal.timeout(ASK_TIMEOUT_MS),
     });
     env = await res.json();
   } catch { return null; }
-  if (!env?.ok) return null;
+  if (!env?.ok) {
+    // The plugin can now REFUSE this (plugin 0.10.0, isolation record section 12.4): a Blockbench
+    // with its agent windows all spoken for and at its limit answers with the ports and the limit
+    // rather than opening a seventh. Said out loud, because the caller's next move - sharing a
+    // window - is a worse outcome that would otherwise have no explanation.
+    if (env?.error) {
+      process.stderr.write(`[mcp-toolkit] blockbench: asked ${asker.base} for a window and was refused — `
+        + `${env.error}${env.hint ? ` (${env.hint})` : ""}\n`);
+    }
+    return null;
+  }
+  // A port in the answer is a window the plugin has ALREADY decided on - one it reused, or one this
+  // session already held - so there is nothing to go and look for and no gap for another session's
+  // scan to arrive in. This is the same shortcut `askTheDock` takes, and it is why the reuse the
+  // plugin does on this route is worth anything: without it the answer would be followed by the
+  // very scan whose race section 11.9 deleted.
+  if (typeof env.port === "number" && env.port !== asker.port) {
+    const base = baseOf(env.port);
+    const claimed = await claimAt(base);
+    return use({ base, port: env.port, hello: { window: env.window ?? claimed?.window ?? null } },
+      { claimed: claimed?.ok === true, reused: true });
+  }
   if (env.autostart === false) {
     process.stderr.write("[mcp-toolkit] blockbench: asked for a window, but this Blockbench has "
       + "\"Start when Blockbench opens\" off - the new window will serve nothing until somebody clicks "
@@ -368,15 +435,29 @@ const nothing = () => new Error(`no Blockbench window answered on ${SCAN.host}:$
  * A window is allocated at the FIRST CALL instead (`callBlockbench`), which is the first moment a
  * session has actually asked Blockbench to do something.
  */
+/** The window the manifest was last read from, and when the range was last swept in full. */
+let peeked = null; // {base, scannedAt}
+// How long one remembered window is re-asked before the range is swept again anyway.
+const PEEK_RESCAN_MS = 60_000;
 async function peekBase() {
   if (windowState) return windowState.base;
   if (!SCAN) throw new Error(`MCPTK_BLOCKBENCH is not a URL: ${BLOCKBENCH_URL}`);
   if (PINNED) return BLOCKBENCH_URL;
+  // AN IDLE SESSION ASKS ONE WINDOW, NOT SIXTEEN (section 13). The throttle above covered only an
+  // EMPTY result, so every idle session that held no window rescanned the whole range on every
+  // poll - sixteen connects every three seconds per session while the game was down. The window the
+  // manifest was last read from is re-asked alone; the full sweep runs when that one fails or at
+  // most once a minute, so a Blockbench that changed shape is still noticed inside the watcher's
+  // own cadence.
+  if (peeked && Date.now() - peeked.scannedAt < PEEK_RESCAN_MS) {
+    try { await helloAt(peeked.base); return peeked.base; } catch { peeked = null; }
+  }
   if (Date.now() - lastEmptyScan < EMPTY_RESCAN_MS) throw nothing();
   const found = await scanWindows();
-  if (!found.length) { lastEmptyScan = Date.now(); throw nothing(); }
+  if (!found.length) { lastEmptyScan = Date.now(); peeked = null; throw nothing(); }
   // Lowest port first (`scanWindows` sorts), so every idle session reads from the same window and
   // none of them is singled out. A dock is as good as any other for this and costs nothing.
+  peeked = { base: found[0].base, scannedAt: Date.now() };
   return found[0].base;
 }
 let resolving = null;
@@ -494,14 +575,28 @@ export function ensureBlockbenchPresence() {
     if (res.statusCode !== 200) { res.resume(); presenceState = "closed"; presenceReq = null; return; }
     presenceState = "open";
     res.setEncoding("utf8");
+    let tail = "";
     res.on("data", (chunk) => {
-      if (presenceInfo) return;
-      const line = String(chunk).split("\n")[0].trim();
-      if (!line) return;
-      try { presenceInfo = JSON.parse(line); } catch { return; }
-      if (presenceInfo && presenceInfo.connections > 1) {
-        process.stderr.write(`[mcp-toolkit] blockbench: session id "${SESSION_ID}" is held by ${presenceInfo.connections} connections - `
-          + "one binding cannot tell them apart (a child process inheriting MCPTK_SESSION?); name `project` on every call\n");
+      // Every line, not only the first: the plugin's last word before it closes this socket is an
+      // `evicted` line (section 13), and a shim that is between calls has no other way to hear it.
+      tail += String(chunk);
+      const lines = tail.split("\n");
+      tail = lines.pop() ?? "";
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (!line) continue;
+        let msg;
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg?.evicted) {
+          if (windowState && !windowState.shared && (msg.window == null || msg.window === windowState.window)) loseWindow(msg, msg.reason);
+          continue;
+        }
+        if (presenceInfo) continue;
+        presenceInfo = msg;
+        if (presenceInfo && presenceInfo.connections > 1) {
+          process.stderr.write(`[mcp-toolkit] blockbench: session id "${SESSION_ID}" is held by ${presenceInfo.connections} connections - `
+            + "one binding cannot tell them apart (a child process inheriting MCPTK_SESSION?); name `project` on every call\n");
+        }
       }
     });
     res.on("close", () => { presenceState = "closed"; presenceInfo = null; presenceReq = null; });
@@ -606,6 +701,12 @@ export function dropBlockbenchNames(names) {
  * Call a Blockbench tool. Returns the plugin's envelope `{ok, result, mechanism}` on success and
  * throws with the plugin's own sentence (and hint) on `ok:false`, so the caller renders one shape.
  */
+/** `args` with a relative string `path` resolved against this process's cwd (the workspace). */
+function absolutePaths(args) {
+  if (!args || typeof args !== "object" || typeof args.path !== "string" || !args.path.trim()) return args;
+  if (isAbsolute(args.path)) return args;
+  return { ...args, path: resolvePath(process.cwd(), args.path) };
+}
 export async function callBlockbench(name, args) {
   if (!BLOCKBENCH_URL) throw new Error("blockbench upstream disabled (MCPTK_BLOCKBENCH)");
   // A call can be the FIRST thing that needs a window (a client holding a tool list from before a
@@ -618,6 +719,17 @@ export async function callBlockbench(name, args) {
     throw new Error(`${e.message}. Is Blockbench open with the MCP Toolkit Bridge plugin started `
       + "(Tools > MCP Toolkit Bridge > Start)?");
   }
+  // A window just resolved holds its claim on `claim_grace_ms` alone until presence opens, and
+  // presence used to open only on the next tool-list poll (up to 15 s away). Open it here, at the
+  // moment there is a window to register in; a no-op when it is already open.
+  ensureBlockbenchPresence();
+  // A RELATIVE PATH MEANS THE WORKSPACE. `project op:save {path:"models/x.bbmodel"}` reached
+  // Blockbench as-is and Blockbench resolved it against its own install directory (the bog_toad
+  // run of 2026-09-13 lost a turn to it and saved only with an absolute path). The session's
+  // notion of "here" is this process's cwd - the workspace the loop file lives in - so a relative
+  // `path` is made absolute against it before it leaves, for every tool that takes one (open,
+  // save, export_model, texture load/write). Blockbench never sees a relative path again.
+  args = absolutePaths(args);
   let res;
   try {
     res = await fetch(`${base}/cmd`, {
@@ -628,14 +740,9 @@ export async function callBlockbench(name, args) {
     });
   } catch (e) {
     if (e.name === "TimeoutError" || e.name === "AbortError" || /timed? ?out/i.test(e.message)) {
-      throw new Error(
-        `Blockbench accepted "${name}" but gave no answer within ${CALL_TIMEOUT_MS / 1000}s. `
-        + "Blockbench may be sitting in a dialog of its own; ask the person at the keyboard to look at "
-        + "the Blockbench window before treating this as a dead server.");
+      throw new Error(await diagnoseTimeout(base, name));
     }
-    windowState = null;
-    throw new Error(`Blockbench unreachable at ${base} (${e.message}). Is Blockbench open with `
-      + "the MCP Toolkit Bridge plugin started (Tools > MCP Toolkit Bridge > Start)?");
+    throw new Error(await diagnoseUnreachable(base, e));
   }
   let env;
   try {
@@ -643,9 +750,73 @@ export async function callBlockbench(name, args) {
   } catch {
     throw new Error(`Blockbench answered "${name}" with HTTP ${res.status} and no JSON`);
   }
+  // THE WINDOW SAYS WHOSE IT IS on every reply (section 13). A note on a window this session
+  // believed was its own is the eviction reaching it mid-call: the call ran - refusing it would be
+  // enforcing the claim - but the window is forgotten here and the note goes into what the agent
+  // reads. A SHARED window was never this session's, and it was told so once on stderr already.
+  let lost = null;
+  if (env && env.window && typeof env.window === "object" && windowState && !windowState.shared) {
+    lost = loseWindow(env.window, env.window.reason);
+  }
   if (!env || env.ok !== true) {
     const msg = env?.error ?? `HTTP ${res.status}`;
-    throw new Error(env?.hint ? `${msg}. ${env.hint}` : msg);
+    throw new Error((env?.hint ? `${msg}. ${env.hint}` : msg) + (lost ? ` [${lost.note}]` : ""));
+  }
+  if (lost) {
+    if (!env.result || typeof env.result !== "object") env.result = { value: env.result };
+    env.result.window_lost = lost.note;
   }
   return env;
+}
+/**
+ * A timeout blamed a dialog; the truth was usually the QUEUE (section 13): one queue for every
+ * session and a two-minute ceiling here, so a call queued behind a long push timed out untouched -
+ * and, until plugin 0.11.0, then RAN after the agent was told it failed. The plugin drops a call
+ * whose caller is gone and says on `/hello` what is running and how many wait, so the sentence is
+ * read off that once, and the dialog stays only for the case where nothing is running at all.
+ */
+async function diagnoseTimeout(base, name) {
+  const ceiling = `${CALL_TIMEOUT_MS / 1000}s`;
+  let h = null;
+  try { h = await helloAt(base); } catch { /* the dialog case, or the window went away meanwhile */ }
+  const q = h?.queue;
+  if (q?.running) {
+    const r = q.running;
+    const mine = r.session === SESSION_ID && r.name === name;
+    if (mine) {
+      return `Blockbench has been running "${name}" for ${r.s}s and has not answered within ${ceiling}`
+        + (q.waiting ? ` (${q.waiting} call(s) wait behind it)` : "")
+        + ". It may be sitting in a dialog of its own; ask the person at the keyboard to look at the Blockbench window.";
+    }
+    return `Blockbench is running "${r.name}"${r.session ? ` from session ${r.session}` : ""} for ${r.s}s`
+      + `${q.waiting ? ` with ${q.waiting} call(s) waiting` : ""}; "${name}" was queued behind it, gave up at ${ceiling}, `
+      + "and has been dropped (it did not run). Retry once that call is done.";
+  }
+  if (h) {
+    return `Blockbench accepted "${name}" but gave no answer within ${ceiling}, and nothing is running in its queue now. `
+      + "Blockbench may have been sitting in a dialog of its own; ask the person at the keyboard to look at the Blockbench window before treating this as a dead server.";
+  }
+  return `Blockbench accepted "${name}" but gave no answer within ${ceiling} and does not answer /hello now. `
+    + "Blockbench may be sitting in a dialog of its own; ask the person at the keyboard to look at the Blockbench window before treating this as a dead server.";
+}
+/**
+ * A LOST WINDOW IS NAMED (section 13). When a person closes an agent's window by hand the old
+ * sentence was "Blockbench unreachable, is it open?" and the next call landed in a fresh window
+ * with "no project is open"; nothing said the window went away. One scan tells the two apart.
+ */
+async function diagnoseUnreachable(base, e) {
+  const w = windowState;
+  windowState = null;
+  if (w && !PINNED) {
+    let others = [];
+    try { others = await scanWindows(); } catch { others = []; }
+    others = others.filter((x) => x.base !== w.base);
+    if (others.length) {
+      lastLoss = { port: w.port, window: w.window, held_by: null, reason: "gone", at: Date.now(),
+        note: `window ${w.window ?? "?"} (port ${w.port}) is gone - closed by hand? - Blockbench is still open (${others.length} window(s) answer) and the next call gets a window of its own; work that was unsaved there is lost unless the person kept it` };
+      return `${lastLoss.note}.`;
+    }
+  }
+  return `Blockbench unreachable at ${base} (${e.message}). Is Blockbench open with `
+    + "the MCP Toolkit Bridge plugin started (Tools > MCP Toolkit Bridge > Start)?";
 }

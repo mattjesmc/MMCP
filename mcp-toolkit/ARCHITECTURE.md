@@ -35,6 +35,20 @@ primarily to extend a human player rather than imitate one.
 > consequence, when someone asks for a port that carries a profile") is the design the new door was
 > built to, clause by clause — including which layers do not come along.
 
+> **AMENDED 0.155.0/0.156.0: a THIRD door, and the premise below has an answer** — `mmcpd`
+> (`docs/platform/HOST_DESIGN.md`), one long-lived process per machine at `127.0.0.1:25500`,
+> serving `/mcp/<project>?profile=<p>` over streamable HTTP. Read it against "why the split is this
+> way" below: that paragraph says *something must exist to be spawned and held*, because the game
+> cannot be a stdio child of a program that outlives it. The daemon is that something, named —
+> held across every game's lifetime instead of re-derived per session, so a client's registration is
+> a
+> URL and the client spawns nothing. What moved is ownership, not layering: the registry of which
+> game is which, the session table, where memory lives and which Blockbench a session works in are
+> the daemon's, and the shim below is unchanged (the daemon spawns one **per session**, because
+> every layer keeps its state at module scope). The tool list is still fetched from `/tools`, the
+> profile is still shim-side policy — it is now nameable in the URL as well as in `MCPTK_PROFILE`.
+> And the daemon watches disk: see *the edit is the event* under "One log".
+
 **The game does not speak MCP** *on the port the shim dials.* This is the first thing to know about
 the shape of the toolkit, and it is easy to assume otherwise because the mod ships the MCP server
 inside its own jar.
@@ -730,7 +744,7 @@ Every `ToolDef` declares a **mechanism**; the dispatch layer stamps and (where a
 | `observe`    | Reads; no world mutation                                           | perception ladder, `get_screen`, `bot_status`, `get_log` |
 | `embodied`   | An actor body does it; respects reach; can fail physically         | `bot_goto`, `bot_mine`/`bot_place`/`bot_use`/`bot_attack`/`bot_select`/`bot_craft`, `bot_follow`/`bot_run`/`bot_point`/`bot_target`, `bot_possess`/`bot_release`, and Node-side `bot_scan` |
 | `world_edit` | Direct server edit; instant; mass-effect; previewable; undoable    | `place_shape`, `place_shapes`, `set_blocks`, `place_structure`, `edit_building` |
-| `privileged` | Arbitrary authority; audit mandatory                               | `run_command`, `hotswap_class`, `push_asset`, `push_data`, `capture_structure` |
+| `privileged` | Arbitrary authority; audit mandatory                               | `run_command`, `hotswap_class`, `push_asset`, `push_data`, `capture_structure`, `record_edit` |
 
 "Clear these trees" done by drone-mining and done by `world_edit` are **different acts** with different
 failure modes, permissions, and consequences — responses must say which happened
@@ -1105,6 +1119,18 @@ memory layer heals by re-scanning from 0). It serves:
 3. **Audit records**: live — every `world_edit`/`privileged` call auto-emits at dispatch (tool, mechanism,
    size-compacted args, `ok`), **including failed attempts**. Audit and situational awareness can never
    disagree because they are the same stream. Undo ids join the record with step 5.
+4. **Edits that happened outside the game** (0.156.0): the `edit` event, and the one write into this
+   stream that does not originate in a tool call. `mmcpd` watches every registered project's `src/`,
+   lands each change by the tool the classifier picks, and then reports it here through
+   **`record_edit`** — the file, which feed saw it (`disk`, later `buffer` and `undo`), who as far
+   as the feed can tell, a capped hunk, and `live: {act, result}` where `result` is one of
+   `swapped | refused | not-yet | pending-rebuild | none`. This is the co-editing contract's shared
+   row (`docs/platform/HOST_DESIGN.md` section 4.5): a human's edit and an agent's edit reach every
+   session on the game the same way, and a session learns of a change nobody told it about by
+   polling the stream it already polls. `record_edit` is `privileged` and checks the vocabulary,
+   caps the hunk and stamps the caller's session; it is served by `full` and excluded from the
+   `modding` default, because the daemon calls it over `/cmd` itself and what a modder needs is the
+   read.
 
 **The vocabulary is an artifact, not prose** (0.42.0). `EventTypes` holds every type with its group,
 its one-line doc and its urgency; `get_events`' description is *rendered* from it and `EventLog.emit`
@@ -1234,7 +1260,23 @@ SURVIVAL_MODE_PLAN §3). Audit is broadcast and carries the tool, coordinates an
 types. The shim declares its profile per call (`X-MCPTK-Profile` → `ToolContext.legal()`) and
 `EventTools` excludes `audit` at the source — same enforcement seam as chat routing, same trust model
 as session ids (the caller declares, the bridge stays localhost-trusted; which tools exist at all was
-always shim-side). This exclusion is deliberately **silent**, the one place in this log where hiding
+always shim-side). *(On the in-jar MCP door the same parameter carries a surface NAME, so legality is
+declared per surface rather than read back out of that name — `IN_JAR_MCP_DESIGN.md` §4.)*
+
+**What "localhost-trusted" does and does not cover.** It covers *authentication*: nothing here proves
+who a caller is, every identity and profile is a declaration, and the defence is that the socket is
+bound to `127.0.0.1` and nothing off this machine can reach it. It does **not** cover a caller that is
+already on this machine and is not a program the human started — specifically a **web page in their
+browser**. A cross-origin `fetch` declaring `Content-Type: text/plain` is a CORS *simple request*: it
+is sent with no preflight, and although the page cannot read the reply, the side effect has already
+landed in the world. The port is not a secret (25599 dev, 25600 production; a page may try both), and
+the manifest behind it includes `run_command` and `hotswap_class`. So there is exactly one declaration
+this bridge checks rather than trusts: **`Origin` must be loopback or absent** (`BridgeOrigin`, called
+first by every handler on both doors). It is worth checking precisely because it is the one thing a
+browser cannot forge or omit — and an absent `Origin` is *allowed*, because `curl`, the shim and every
+non-browser MCP client send none, and refusing them would be how a localhost dev tool becomes unusable
+to be safe from a threat it had already handled. A token or a client allow-list is not the answer to
+this caller: it buys nothing against a browser and breaks every `.mcp.json` in the workspace. This exclusion is deliberately **silent**, the one place in this log where hiding
 something is not disclosed per call: "3 events were withheld" would itself be the leak. A sense
 boundary is not a truncation, so the disclosure lives in the contract (the tool description says legal
 sessions get no audit, and asking for `type:"audit"` fails fast) rather than in the stream.

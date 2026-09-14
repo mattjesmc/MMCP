@@ -399,7 +399,11 @@ function compassOf(yaw) {
 // --- local-registry triple (local/registry.mjs shape) ----------------------------------------------
 
 export function localTools() {
-  return [SCAN_TOOL];
+  // A COPY, like local/tools.mjs and local/dev.mjs return: the merged list this joins gets decorated
+  // and profile-overridden in place downstream, and handing out the module-level singleton meant
+  // those writes landed on shared state. Harmless with one process and one profile; still the one
+  // path that broke decorate's stated "clone before the first change" invariant.
+  return [{ ...SCAN_TOOL }];
 }
 
 export function isLocalTool(name) {

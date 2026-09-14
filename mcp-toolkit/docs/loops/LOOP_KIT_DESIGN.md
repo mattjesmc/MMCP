@@ -478,3 +478,139 @@ or kept as a case study.** ArmorPieces is a separate project; MMCP ships its own
 examples. Section 5.6's row and step 6 of section 9 both name the old file and want the new one -
 and 5.6 already records the other half of why it was a bad file to hand a modder: its `run` points
 at a `tools/check_active.py` that exists in nobody's tree, so the checks never ran either.
+
+## 13. 2026-09-13: the entity loop, run from a brief by a weaker model (toolkit 0.148.0 / shim 0.75.0 / entity plugin 0.4.1)
+
+The kit's second unit kind, and the first one measured on a model below the tier the kit was
+designed on. `entity-loop/` in the workbench is the workspace (README = the record of the setup and
+what the run found); this section is the numbers and what they say about the kit.
+
+**The shape.** Loop file over the `art` base cut to 18 names with eight per-tool notes; the check
+is an `eval` - `mcptoolkitEntity({action:'check', project: PROJECT, previous: __previous})` - on
+every `blockbench_edit` reply except `risky_eval`'s; an agent (`entity-author-qwen`) in the
+part-author-qwen mould (the brief is the whole world, one call per message, two pictures); a brief
+with every call and every argument written out (ArmorPieces' TEMPLATE-qwen rule). Driven through
+the kit's own `run-unit.ps1` under the qwen credentials, pinned to one Blockbench window.
+
+**Two runs, same brief, qwen3.8-flash:**
+
+| run | turns | wall | cost | outcome |
+|---|---|---|---|---|
+| 1 | 23 | 1.8 min | $0.46 | built and painted everything exactly to the brief; the push failed with `mcptoolkitEntity is not defined` (the WINDOW had loaded a broken save of the plugin - the operator's syntax error, live-reloaded at the window's birth); the model stopped and reported, as the brief told it to, and substituted `inspect overlaps` for the check that never ran |
+| 2 | 21 | 1.6 min | $0.34 | the whole loop: 7 bones, 7 cubes, sheet, one `paint_faces` over 42 faces, contact sheet, push `parse:"ok"`, preview staged, in-game screenshot of the beetle |
+
+Context per turn ~8.8k tokens (the manifest is most of it; 18 tools + notes), pictures ~300 tok
+as sent, output 2.8k for the whole session. The check block rode 17 replies and named the 43
+unpainted faces after `create_texture` and nothing after the paint - the model read both correctly.
+Geometry in both runs: 0 overlap, 0 coplanar, 6 sunk within tolerance, 15 clear.
+
+**What it says about the kit.**
+
+- A fully-specified brief plus a check on every reply is enough for this model tier to build an
+  entity with no judgement calls at all, at a third of a dollar. The brief did the design; the
+  session did the typing and the reading. That is the same result section 5 measured on skins:
+  pin the judgement and the labour drops a tier.
+- The failure that did occur was in the environment, and the agent's brief-mandated behaviour
+  (report and stop rather than improvise) is what made it cheap: $0.46 and a correct diagnosis of
+  WHERE it failed (though not why - it blamed the game's extension list, which was a guess the
+  brief had not armed it against).
+- Three toolkit defects surfaced around the loop and are fixed in this release (CHANGELOG 0.148.0):
+  `screenshot` photographing the reload overlay, the check answering outside its contract on an
+  empty project, the shim's window ask timing out on a plugin that takes 12-40 s to answer.
+- Not measured: the same brief on a stronger model (the same-brief A/B section 12 of LOOPS.md
+  still owes), and a brief that leaves the model any decision - this one left none, on purpose,
+  and the next entity brief should leave exactly one to see what this tier does with it.
+
+### 13.1 The second cut: a designed model, and a clip on it (same day)
+
+The dictated brief proved execution; the user's next ask was the rest - a creature described rather
+than dictated, pixel detail, and animation, each with a loop. What that took:
+
+- **Two levers the toolkit lacked.** A designed model has no brief to pin its sheet layout, and
+  laying out box UV by hand is exactly the labour a weak model gets wrong: `place_cube uv:"pack"`
+  (bridge plugin 0.12.0) packs each cube's footprint into free space and refuses with the size it
+  needs when the sheet is full. And a clip cannot be judged from one picture of a playing preview:
+  `mcptoolkitEntity({action:'flipbook'})` (entity plugin 0.5.0) pushes, stands N copies frozen at
+  N times in a row, and answers with the `render` argument that frames the row - the contact sheet
+  composed by the world itself.
+- **A second loop file**, `animation.loop.json`, selected per run with `MCPTK_LOOP`: `art` cut to
+  ten names (the animation tool, the look, the flipbook eval, render - no geometry, no paint, on
+  purpose), the same eval check (it samples clips by the game's rules, so a leg through the body
+  is a `! animated walk @0.25 ...` line on the reply that placed the keyframe), and notes carrying
+  the sign convention in the rig's own frame.
+- **Two agents**, `entity-designer` and `animation-author`, and two briefs that leave the numbers
+  to the model: `bog_toad.md` (a described creature with a bone table the animation loop will
+  need) and `lantern_beetle_walk.md` (a walk on the beetle the first run built).
+- **Two toolkit defects found by the hand-driven dry run of the animation loop**, both timing:
+  `reload_resources` answered before the screen had caught up, so the flipbook's render 300 ms
+  later was an empty sky and then four magenta error cubes (the model appeared two seconds after);
+  the tool now waits for the loading overlay to clear before answering, and `render` refuses while
+  one is up. And a Blockbench window whose plugin file changed under it lost its bridge for good
+  (25806, the window the first runs used): the file-watcher reload is a live deploy with no
+  guarantee, which `blockbench-plugin-live-reload` already said and which now has a casualty.
+
+The dry run itself: open the saved beetle, one clip, six keyframe calls, every reply's check sampling
+nine poses of the walk and finding nothing (25-degree swings clear the shell), a scrubbed pose in
+Blockbench showing the alternating splay, a flipbook of four frames all `parse: ok`, a render that
+showed the row once the reload had settled. What is still to run: the two briefs on qwen3.8-flash
+and the same two on sonnet.
+
+**Measured, qwen3.8-flash, both loops, 2026-09-13:**
+
+| brief | loop | turns | wall | cost | outcome |
+|---|---|---|---|---|---|
+| `bog_toad` (described) | entity | 49 | 7.0 min | $1.28 | designed 8 bones / 8 cubes, fixed a shared plane and two splay overlaps the check named, base coat + pupils + warts + a 2-row mouth, `parse: ok`, rendered, saved (after a relative save path failed) |
+| `lantern_beetle_walk` | animation | 17 | 1.9 min | $0.37 | removed the dry run's clip, authored diagonal pairs at 25 degrees, a 0.75 px bob, a 7 degree lantern sway; check clean at every call over 9 sampled poses; flipbook 4/4 `parse: ok`; rendered; saved |
+| `bog_toad` (first attempt) | entity | 7 | 2.3 min | $0.33 | no Blockbench tools: the pinned window had swept itself; the session said so and stopped |
+
+What the designed run says that the dictated one could not: this tier DESIGNS acceptably when the
+brief carries the judgement in words (what must read from three metres, which parts get bones and
+why) and the check carries the arithmetic. Its toad reads as a toad. Its failures were reading
+failures of tool contracts (`.` clears; a relative path; a 1 px mouth against a gradient), each
+now a note on the tool or a line in the brief, which is the loop compounding as designed. Three
+pictures cost more re-sent than sent (579 tok sent, ~5k re-sent over the turns after them): the
+first contact sheet after the geometry rode 14 turns.
+
+Two toolkit fixes from the toad run: the shim resolves a relative `path` in any Blockbench call
+against the workspace before it leaves (shim 0.76.0; Blockbench resolved it against its install
+directory), and the `paint_ascii` note says out loud that `.` clears.
+
+**The same toad brief on sonnet (control, one run):** 37 turns, 4.9 min, $0.63 (plus a $0.44
+attempt lost to the window-claim lapse, 13.5a). Same shape of result - 8 bones / 8 cubes, the
+same two check findings (head sharing the body's bottom plane; a 20-degree back-leg splay digging
+in, settled at 15 degrees and a 0.3 sink), one base coat, one detail pass, `parse: ok`, rendered,
+saved - reached in fewer calls and with no contract misreads (spaces not dots for the pupils, a
+two-row mouth first time, the absolute path). It also named a tool-contract trap qwen had walked
+past: a cube named like its bone makes `modify_cube` / `element` by name ambiguous, so it fell back
+to uuids from the replies. The comparison says the qwen toad's extra turns were contract-reading
+turns, and each of those is now a note; the design itself was of the same class. qwen stays the
+loop's model.
+
+### 13.2 2026-09-13, later: the check read for what it lets through (entity plugin 0.6.0)
+
+Two loops running from briefs made the check the load-bearing part, so it was read as one: which
+defects reach the game without a line? Four, each now a finding with its harness check, the record
+in CHANGELOG 0.149.0 and `ENTITY_AUTHORING_DESIGN.md` 6.2: a push never ran the battery (it does,
+last among its refusals, and refuses with the lines; `force:"<why>"` is the loop kit's own string
+convention and is recorded on the reply); `detached`, the mirror of the animated overlap arm - a
+pair in contact at rest that opens a gap at a sample, the wrong-pivot signature; `fractional`, the
+half-pixel leg the first run met as `stray`, named as the cube it is; and paint counted at the
+game's alpha cutout (26/255) rather than at alpha > 0. Both loop files' `risky_eval` note and all
+three agents say the push refuses while `!` lines stand. The animated overlap tolerance (a wide limb
+on the RIGHT pivot buries a corner past 1 px at 30 degrees) is recorded there as a decision owed,
+and the near-coplanar band, shell occlusion, the sheet-size mismatch and loop closure stay on the
+list in the order they are likely to bite.
+
+### 13.3 2026-09-13, later still: what a joint explains, and the near band (entity plugin 0.7.0)
+
+The tolerance decision 13.2 left owed is taken, as a per-sample allowance rather than an emergence
+rule: a pair in contact at rest may bury at a sample by `sinkPx + reach * sin(angle)`, the smaller
+box's extent along the swing times the sine of the pair's turn since rest - what a pivot at the joint
+explains and no more (an emergence rule would name vanilla's own quadrupeds, whose legs swing 1.4
+radians). A pivot up the thigh, a position channel driving a limb in, or a limb crossing a part it
+never touched still exceed it, and the `!` line carries what was explained (`3.00px (a 30 deg joint
+swing explains 2.00)`); an explained burial rides the long form, never the contract. And the first of
+13.2's owed list, `near`: parallel faces a hair apart (over 0.0005 px, under 0.1 px) that z-fight only
+at distance, a finding with its lift in the line. Record: CHANGELOG 0.151.0, `ENTITY_AUTHORING_DESIGN.md`
+6.2. All three loop agents' check vocabularies name the new lines. Shell occlusion (5.4), the sheet-size
+mismatch, loop closure and pivot placement stay on the list.

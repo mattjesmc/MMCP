@@ -6,7 +6,7 @@ One mod jar (Fabric and NeoForge, dev and production) that opens a localhost HTT
 running game and registers tools on it. Through `../mcp-server/`, any MCP client drives those tools:
 read the world, edit it transactionally, push assets and data live, hotswap classes, stage entities
 from Blockbench, author screens as documents, capture and place structures, preview worldgen, and
-run authoring loops at scale. Toolkit 0.146.0, mcp-server 0.73.0, convention plugin 0.7.0.
+run authoring loops at scale. Toolkit 0.156.0, mcp-server 0.78.0, convention plugin 0.7.0.
 
 Since 0.146.0 **the jar also hosts an MCP server of its own**, at
 `http://127.0.0.1:<port>/mcp` - no Node, nothing to install, nothing to spawn: point any client that
@@ -14,6 +14,17 @@ speaks MCP over HTTP straight at that URL, and `/mcp/<surface>` chooses which sl
 gets. It exists only while the game does and serves the game's tools alone, which is why
 `../mcp-server/` is still the fuller path and still the supported one -
 `docs/platform/IN_JAR_MCP_DESIGN.md` has the table.
+
+Since 0.156.0 there is a **third door, and a route that needs no door at all**. `mmcpd`
+(`../mcp-server/daemon.mjs`) is one long-lived process per machine at `http://127.0.0.1:25500`
+that hosts the shim for every project: registration becomes a URL rather than a command and an
+environment (`claude mcp add --transport http mmcp http://127.0.0.1:25500/mcp/<project>`, with
+`?profile=art` to pick the surface), and the client spawns nothing. It also **watches every
+registered project's `src/`**: a file written there - by an agent, by your editor, by a texture
+tool, by a checkout - is landed in the running game with no tool called, and every change is a row
+on `GET /changes` and an `edit` event in the game's `get_events` saying what became of it. That is
+the disk feed of the co-editing contract; `docs/platform/HOST_DESIGN.md` sections 4 and 15 are the
+design, and `LIVE_MODDING.md` opens with what it does and does not land.
 
 The bridge binds `127.0.0.1` only and is on automatically in Gradle dev runs (`ping` reports the
 port). Any local process can drive the game: that is the trust model, and there is no permission
@@ -116,12 +127,27 @@ want those, register `../mcp-server/` instead (`/mmcp server register <your proj
 that registration for you). `docs/platform/IN_JAR_MCP_DESIGN.md` has the table of what each door
 carries.
 
-**Where the jar and the plugin come from.** Release 1 is served from a static Maven (a `maven`
-branch of this repository served by GitHub Pages, plus a GitHub Release of the jar for a production
-`mods/` folder) - `gradlew publishAllPublicationsToStaticRepository -Pmaven_repo=<checkout>` in
-`mcp-toolkit/` and `gradle-conventions/` writes it. Until that branch is pushed, both resolve from
-mavenLocal: `gradlew build` once in each of those two directories publishes them there, which is
-what the template's `settings.gradle` names today.
+**Where the jar and the plugin come from.** A static Maven repository: the `maven` branch of
+https://github.com/mattjesmc/MMCP, served over `raw.githubusercontent.com`, plus a GitHub Release
+of the jar for a production `mods/` folder. Paste this where your build looks for plugins and
+dependencies (`settings.gradle` `pluginManagement`, and `repositories` in `build.gradle`):
+
+```groovy
+maven {
+    url = uri('https://raw.githubusercontent.com/mattjesmc/MMCP/maven')
+    content { includeGroup 'com.mattmc.mcptoolkit'; includeGroup 'com.mattmc.mcmod' }
+}
+```
+
+**Raw, not Pages, and that is not a preference.** GitHub Pages is enabled on this repository but
+its source is the `main` branch, so the Pages host serves the code snapshot and never the `maven`
+tree - the artifact URL under `mattjesmc.github.io` answers 404 while the raw one answers 200.
+Earlier versions of this paragraph named Pages; it was wrong.
+
+`gradlew publishAllPublicationsToStaticRepository -Pmaven_repo=<checkout>` in `mcp-toolkit/` and
+`gradle-conventions/` is what writes that branch. Working on the toolkit itself, or offline, both
+artifacts also resolve from mavenLocal - `gradlew build` once in each of those two directories
+publishes them there, which is what the template's `settings.gradle` names today.
 
 Off Windows: everything above except `launch_game` and `tools/rebuild.ps1`, which spawn the game
 through PowerShell; run `gradlew runClient` yourself, and everything after `ping` is identical.
@@ -135,6 +161,8 @@ call that widens it.
 | Task | Read | Tools / entry |
 |---|---|---|
 | Get a change into the running game without restarting; pick the route by what changed | `LIVE_MODDING.md`: Decision table | `hotswap_class`, `push_asset`, `push_data`, `reload_resources`, `reload_data`, `get_log` |
+| Get a change into the running game **without calling anything** - write the file and let the daemon land it | `LIVE_MODDING.md`: The disk feed; `docs/platform/HOST_DESIGN.md` sections 4, 15 | `mmcpd serve`, `mmcpd changes --follow`, `get_events {type:"edit"}`, `record_edit` |
+| Register a client once for every project on the machine, with no command and no env to maintain | `../mcp-server/README.md`: Register with Claude Code; `docs/platform/HOST_DESIGN.md` section 15 | `mmcpd add <root>`, `mmcpd serve`, `http://127.0.0.1:25500/mcp/<project>?profile=<p>` |
 | Start a block or item from nothing, then see it in the game | `LIVE_MODDING.md`: Before a game exists | `gradlew scaffold`, then `launch_game`, `query_registry`, `set_blocks`, `render` |
 | Check a resources tree before any game loads it | `LIVE_MODDING.md`: Before a game exists | `gradlew checkAssets` (under `check`); a loop file's `checks[].run` |
 | Find out why the game died, or why it never came up | `LIVE_MODDING.md`: The crash, read by the next game | `ping` (`last_crash`), `get_log {crash}`, `launch_game`'s exit-1 log |

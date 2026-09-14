@@ -119,9 +119,9 @@ The scaffolded loot table drops the block. Once you change it, this is how you c
 `-Pbehaviour` writes a `<Id>Block` class extending the vanilla one, wired into the registration for
 you. From there it is ordinary Fabric modding — and this is where the live loop changes how it feels:
 
-**A method body is a hotswap.** Change what `useWithoutItem` does, `gradlew compileJava`,
-`hotswap_class`, and it is live in the running game in seconds. You can iterate on behaviour the way
-you iterate on a texture.
+**A method body is a hotswap.** Change what `useWithoutItem` does, call
+`hotswap_class {class: "...", compile: true}` — which runs the compile itself — and it is live in the
+running game in seconds. You can iterate on behaviour the way you iterate on a texture.
 
 **Anything structural is a restart.** A new field, a new method, a changed constructor call, a new
 block property — all of it. Light level, hardness, sound group and friction are set at construction,

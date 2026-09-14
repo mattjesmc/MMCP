@@ -86,6 +86,9 @@ class BundledResourcesTest {
         Set<Path> seen = new LinkedHashSet<>();
         List<String> missing = new ArrayList<>();
         queue.add(dist.resolve("index.mjs"));
+        // The daemon is the dist's second entry point (0.155.0, HOST_DESIGN.md): the same closure
+        // rule, from its own root.
+        queue.add(dist.resolve("daemon.mjs"));
 
         while (!queue.isEmpty()) {
             Path file = queue.poll().normalize();

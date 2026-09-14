@@ -166,6 +166,11 @@ if (toolkitAvailable) {
         // not of the toolkit's own build file, which is the only place it used to be set - so
         // hotswap_class was quietly unavailable in every consumer's game.
         run.vmArg '-Djdk.attach.allowAttachSelf=true'
+        // Mixin's own hot-swap agent, which makes hotswap_class able to re-apply a swapped MIXIN to
+        // its targets. Read once at startup, so it has to be here rather than asked for later - and
+        // here rather than in the toolkit's own build file for the reason above: a consumer's game
+        // is where mixin edits are actually made.
+        run.vmArg '-Dmixin.hotSwap=true'
         if (bridgePort) {
             run.vmArg "-Dmcptoolkit.port=${bridgePort}"
         }

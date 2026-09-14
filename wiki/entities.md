@@ -82,6 +82,32 @@ to see whether the thing reads as a spider — and do not confuse the two jobs.
 The same principle drives the `parse` field on a push: the client's loader either accepted the
 geometry or it did not, and that is a sentence rather than an impression.
 
+**And you do not have to remember to run it.** Since plugin 0.6.0 a headless push runs the battery
+itself and **refuses** when it has problems, with the check's own lines as the refusal — before
+that, a model with three coplanar pairs could be pushed and photographed with nothing said.
+Pushing anyway takes `force: "<why>"`, a string, because the reason is the record: the reply comes
+back `forced`, with a warning. The panel's own button forces, on the grounds that a person clicking
+it is judging by eye and has nowhere to type a reason.
+
+Four things the check names that are not overlap, and are worth recognising in a reply:
+
+- **`detached`** — a pair that touches at rest and shows daylight at a sampled pose. That is the
+  signature of **a pivot in the wrong place**: a leg pivoting at the hip rotates *into* the body and
+  stays in contact; the same leg pivoting at the foot swings away and opens the joint. It only looks
+  at pairs that were in contact at rest, so two forelegs cannot accuse each other.
+- **`fractional`** — a cube whose size is not whole (`4x6.5x2`). The game samples half a texel of
+  the neighbouring face there. It is named as a cube problem, first in the UV list, rather than arriving
+  as a confusing count of stray paint.
+- **Paint is counted at the game's alpha cutout**, not at alpha > 0. The entity shader discards
+  anything under 0.1, so alpha 25/255 is a hole in the world and 26/255 is paint. Texels in between
+  come back as a `faint` note with the threshold.
+- **An animated burial a joint explains is not a finding.** A wide limb on a correct pivot buries a
+  corner deeper the further it swings — that is how every vanilla quadruped's hip works. Since
+  plugin 0.7.0 the tolerance at a sample is rest-aware (`sinkPx + reach × sin(angle)`), the line
+  says how much of the burial the joint explained, and what is left over is the number to act on.
+  A pivot up the thigh, or a limb passing through something it never touched at rest, still exceeds
+  it and is still named.
+
 ## Walkthrough: a spider, from model to standing
 
 **1. Model it** in Blockbench, as usual. The bridge plugin's tools (`place_cube`, `add_group`,
@@ -191,6 +217,13 @@ verb, and a session that is not authoring an entity should not pay for it every 
 
 **Verify is the evidence.** SAT overlap over every part pair, shared-face planes, the UV audit — no
 game, no tokens. A screenshot is for legibility, never for geometry.
+
+**Your push was refused and you did not call verify.** It runs on push now and refuses with its own
+lines. Fix what it names, or push with `force: "<reason>"` — the reply will say `forced`.
+
+**The check named an overlap and the model looks right.** Read what it says the joint explained. If
+the leftover is small and the pivot is where the joint is, that is a wide limb swinging through its
+own hip, which is correct. If the leftover is the whole burial, the pivot is up the limb.
 
 **`parse: "error"` carries the loader's own sentence.** Read it. It is the client telling you exactly
 what it could not load.

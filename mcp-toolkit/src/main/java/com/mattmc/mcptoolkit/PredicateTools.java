@@ -152,7 +152,10 @@ public final class PredicateTools {
                 // shell is computed on the real level once the target block itself is seen —
                 // bounded to the seen block's immediate shell, closed fully when the belief-backed
                 // answerer lands (DESIGN.md §16.3 v2).
-                boolean survival = "survival".equals(ctx.profile());
+                // ctx.legal(), not a comparison against the profile string: on the MCP door that
+                // parameter is a surface name somebody picked for a URL, and legality is declared
+                // there rather than spelled. See ToolContext#legal.
+                boolean survival = ctx.legal();
                 if (survival && a.has("load") && !a.get("load").isJsonNull()
                     && a.get("load").getAsBoolean()) {
                     throw new IllegalArgumentException("load_refused: `load:true` pages in remote "

@@ -4,13 +4,70 @@ Operating manual for getting a change into the running game without (or with the
 ARCHITECTURE.md owns vocabulary and decisions; this doc owns the workflow. The tool manifest
 (`GET /tools` on the bridge) is the truth about what's registered — doc tables are summaries.
 
+## The disk feed: the route where you call nothing (0.156.0)
+
+**Read this before the table.** Everything below is the tool route — what to call, and what each
+call can and cannot reach. Since 0.156.0 there is a route above it that calls none of them
+*yourself*: with `mmcpd` running (`node mcp-server/daemon.mjs serve`, and the project added once
+with `daemon.mjs add <root>`), **a file written under the project's `src/` is landed in the running
+game with no tool called**. An agent's `Write`, your editor's save, a texture tool's export, a
+`git checkout` — the daemon sees the write, waits for the path to be quiet for 500 ms, batches
+whatever else went quiet with it, and calls the tool this table would have told you to call.
+
+| What you wrote | What the daemon calls | Note |
+|---|---|---|
+| `src/*/resources/assets/**` (texture, model, blockstate, sound, lang) | `push_asset {file}` per file, then **one** `reload_resources` for the batch | the reload is the latency, not the push |
+| `src/*/resources/assets/*/ui/*.ui.json` | `ui_doc {op:"refresh"}` | mirrors the source into the loaded pack, re-parses, rebuilds a preview that is showing it |
+| `src/*/resources/data/**` or `src/*/generated/data/**` | `push_data {file}`, then one `reload_data` | needs a world loaded |
+| `src/*/java/**.java` | **one** `hotswap_class {classes, compile:true}` for the batch | one compile for the batch, not one per file |
+| a deleted asset or data file | `clear_assets` / `clear_data` | the override goes, the built copy comes back |
+| `gradle.properties` | nothing in the game | the registry entry is re-read (the port may have changed) |
+| `fabric.mod.json`, `*.mixins.json`, a new or deleted class | nothing | structural: `pending-rebuild`, see below |
+
+**Every change gets a row, and the row is the verdict.** `node mcp-server/daemon.mjs changes
+[--follow]` (or `GET /changes`, JSON or SSE) is the feed; the same row is an `edit` event in the
+game's own stream, so `get_events {type:"edit"}` reads it from inside a session without leaving MCP.
+`live.result` is one of:
+
+- `swapped` — it landed.
+- `refused` — nothing was done, on purpose. Identical bytes are decided **at the daemon** from a
+  content hash, so no game is dialed and **no reload runs**: a rewrite that changes nothing costs
+  nothing. A tool's own refusal (a mixin target, a dirty document) also lands here, with its reason.
+- `not-yet` — a `.java` file that does not compile yet. Expected while you are mid-edit; the next
+  write that compiles lands the batch.
+- `pending-rebuild` — real, and structural: a class the JVM never loaded, an added field or
+  method, `fabric.mod.json`, `*.mixins.json`, a deleted class. This is the row that means *now* run
+  `tools/rebuild.ps1`.
+- `none` — the game is down, or nothing lands that kind of file. The row is still recorded.
+
+Three things worth knowing before you rely on it.
+
+- **It does not replace the table below.** The daemon picks the route; it cannot widen what a route
+  can do. A hotswap through the feed hits the same JVM limits (bodies only, and the bytes are new
+  while the objects are old — nothing re-enters, because there is no `reinit` in a write). When a
+  swap lands and the game looks unchanged, that is still the `reentry` question, and answering it
+  is still a tool call.
+- **What it lands, it lands as the daemon** — the edit is attributed `{kind: "unknown"}` from the
+  disk feed, because a write on disk does not say who made it. The buffer and undo feeds of the
+  co-editing contract (`HOST_DESIGN.md` section 4) are what will.
+- **Latency is the route's, not the feed's.** An asset is a whole-pack reload (~5 s on the
+  toolkit's own client); a Java file is Gradle's compile (cold, tens of seconds; warm, a few).
+- Turn it off with `MMCPD_WATCH=0` or `daemon.watch:false`.
+
+`docs/platform/HOST_DESIGN.md` sections 4 and 15 are the design and the build order;
+`../mcp-server/README.md` is the registration.
+
 ## Decision table
 
-What you changed decides the tier:
+What you changed decides the tier. **With `mmcpd` watching, writing the file is the whole of the
+first four rows** — the table is then what the daemon is doing on your behalf, and what to reach
+for when it reports `pending-rebuild`, `not-yet`, or a swap that changed nothing.
 
 | You changed | Route | Latency | Hard limits |
 |---|---|---|---|
-| Java **method body** (mod class) | `gradlew compileJava` → `hotswap_class` | seconds | JVM redefine: no added/removed fields, methods, or classes |
+| Java **method body** (mod class) | `hotswap_class {compile: true}` — one call; it runs the compile itself | seconds | JVM redefine: no added/removed fields, methods, or classes |
+| Java **mixin body** (what an existing `@Inject` or `@Redirect` DOES) | `hotswap_class {compile: true}` on the **mixin** class, not its target | seconds | needs `-Dmixin.hotSwap=true` at launch (on both loom runs since 0.149.0, so a game from before that needs a rebuild); ADDING an injector is structural — restart |
+| **A method body whose effect you cannot SEE** (a screen's `init()`, a mob's `registerGoals()`) | `hotswap_class` with `reinit: true` | seconds | the bytes are new, the objects are old - a swap only shows where the code runs again; `reinit` reaches the current screen and loaded mobs, and the reply's `reentry` block names the route for everything else |
 | **Nothing — you want to know what the JVM actually has** (did that mixin apply? which jar is this class from?) | `query_class` | instant | reflection over the loaded class; a mixin that adds only an interface leaves no trace it can see |
 | Java **structure** (new tool, class, field, registration) | `./tools/rebuild.ps1` from the repo root | minutes | full restart; stops the running game; **one cycle per port** — a second one exits 3 rather than killing the first one's game (`-Takeover` overrides) |
 | **Nothing — something is running that nobody started** (a world that closed itself, a machine carrying idle JVMs) | `./tools/dev-procs.ps1` | instant | read-only unless asked; lists cycle locks, bridge ports, rebuild supervisors, Gradle daemons and dev JVMs. `-Reap`/`-Games`/`-StopDaemons` clean up, scoped to THIS checkout |
@@ -43,18 +100,77 @@ is the route that exists today. Descoped 2026-09-06 (`RELEASE.md` section 4).
 
 ## hotswap_class
 
-- Compile first: `gradlew compileJava` (cwd = repo root). The tool's default byte source reads each
-  class's own classpath entry, which yields the fresh bytes when the class was loaded from a classes
-  directory (dev runs). Jar-loaded classes need an explicit `file` or `dir`.
+- **`compile: true` runs the compile inside the call** (0.153.0, confirmed in a running game) and is
+  the way to use this tool. The project and the task are read off the same path the bytes are: a
+  loaded class states its classes root (`<project>/build/classes/java/main`), that directory states
+  the project and its task (`compileJava`; `build/classes/java/client` is `compileClientJava`), and
+  one Gradle run happens per distinct project-and-task in a batch. Two turns become one, and the
+  failure that used to take two turns to notice - a compile aimed at one project and a swap at
+  another, each reporting success - cannot be expressed. A **failed compile IS the reply**, with
+  javac's own text (file, line, column) and nothing redefined. Only a compile task ever runs: `jar`
+  and `build` deadlock against the running game, which is what `tools/rebuild.ps1` is for, and if
+  some sibling project's jar is dragged in anyway the Windows lock message is translated rather than
+  passed through. The reply's `compiled` block carries Gradle's own word for the task - `executed`,
+  `UP-TO-DATE`, `NO-SOURCE`.
+- Compiling separately still works: `gradlew compileJava` (cwd = the build root), then swap. The
+  tool's default byte source reads each class's own classpath entry, which yields the fresh bytes
+  when the class was loaded from a classes directory (dev runs). Jar-loaded classes need an explicit
+  `file` or `dir` - and so does anything whose classes root is not a Gradle one, which `compile`
+  refuses rather than guessing a project for.
 - **Batch for multi-class edits**: `{"classes": ["a.b.C", "a.b.D"]}` redefines atomically in one
   JVM operation — no tick observes a half-applied change. `class` (singular) still works for one.
-- Requires `-Djdk.attach.allowAttachSelf=true` on the game JVM — set on **both** the loom `client`
-  and `server` runs in the root `build.gradle`.
-- **Mod classes only.** A mixin-transformed or remapped Minecraft class redefined from compiled
-  sources silently loses its load-time transforms.
+- Two launch flags, both on **both** loom runs (`mcp-toolkit/build.gradle`) and in
+  `gradle-conventions` so a consumer's game gets them too: `-Djdk.attach.allowAttachSelf=true`, or
+  the JVM refuses the self-attach this tool needs at all, and `-Dmixin.hotSwap=true` (0.149.0) for
+  the mixin bullet below. Neither can be added to a game that is already running.
+- **Mixins: swap the MIXIN, never the target** (0.149.0, confirmed in a running game at 0.150.0). A
+  mixin target redefined from compiled sources would silently lose its load-time transforms, so the
+  tool **refuses** it and names the mixin to swap instead. Swapping the mixin works: Mixin ships its
+  own hot-swap agent, the toolkit arms it with the instrumentation it already self-attaches, and
+  redefining a mixin class makes Mixin reload it and retransform its targets against their original
+  bytes. The classpath default is the route - **no `dir` needed**, even though the mixin has no code
+  source. Two limits, both stated in the reply: the launch flag `-Dmixin.hotSwap=true` is read **once
+  at startup** (a game booted without it cannot be armed later - rebuild), and only the injector's
+  BODY may change. A new `@Inject` adds a handler method to the target, which is structural.
+- **A mixin is never loaded, only applied** - so `query_class` on one answers nothing until a
+  `hotswap_class` in this session has attached an agent, and then it answers about the *shell*: an
+  empty stand-in carrying the mixin's name, whose empty method table says nothing about the mixin's
+  source. **Read the TARGET** to see what a mixin merged. A `class not loaded` refusal for a mixin
+  name usually means the flag is missing, not that the class is untouched; the reply says so.
+- **A re-apply Mixin declines fails the whole swap** - it returns error bytecode, the JVM rejects it,
+  nothing is redefined, and the reply says Mixin declined and points at
+  `get_log {level:"error", logger:"Mixin/agent"}` for the member it could not conform. The usual
+  cause is adding an injector rather than editing one.
+- **A remapped Minecraft class** is still off limits, for the reason it always was.
+- **THE BYTES ARE NEW, THE OBJECTS ARE OLD** (0.152.0, confirmed in a running game). A redefine
+  replaces bytecode; it does not rebuild the object graph the old bytecode already produced, and it
+  does not re-run a static initialiser. **A swap is visible only where the code RUNS AGAIN** - so a
+  screen keeps the widgets its old `init()` built, a mob keeps the goal list its old
+  `registerGoals()` made, a registry keeps the one `Block` built at registration, and every one of
+  those swaps reports the same `redefined: 1`. The reply's **`reentry` block** says per class what is
+  still holding old state and what would make the code run again, from the LOADED class and from the
+  live game (the client is on that screen right now; three of those mobs are loaded).
+  **`reinit: true`** performs the two re-entries nothing else can reach: it rebuilds the current
+  screen's widgets (re-runs `init()`, the way a window resize does - and it works for a CONTAINER
+  screen, which `close_screen` + `open_screen` cannot reopen), and it re-runs `registerGoals()` on
+  every loaded instance of a swapped `Mob` class, clearing both selectors first (goals added from
+  outside `registerGoals()` go with them). It is allowed on bytes that did not change, which is the
+  shape the loop actually has: swap, look, nothing moved, re-enter.
+- **Bytes identical to what is already running are REFUSED** (0.152.0), not reported as a redefine -
+  a forgotten (or misdirected) `compileJava` is the most common failure of this loop, and it used to
+  report itself as its success. Two exact sources, no heuristics: what the JVM is running (read back
+  through a capturing retransform) and what this session pushed before. **The first swap of a class
+  in a JVM cannot be decided that way** - in a Fabric dev run the bytes Knot loaded are not the bytes
+  on disk (same length, different content) - so every reply also carries `compiled_at`, the mtime of
+  the bytes just installed. If that predates your edit, the edit is not in the game. With
+  `compile: true` the refusal reads differently on purpose: the compile just ran, so a missing
+  compile is NOT the cause and the edit is not in the source tree that project compiles - and a
+  Gradle that answered `UP-TO-DATE` has said the same thing in its own voice.
+- **`{"status": true}` lists live divergence from the built jar**: every class this JVM has been
+  swapped away from, when, from where, and the digest now installed. This replaces the old advice
+  ("if you've lost track, restart") - the process was holding that fact the whole time.
 - Privileged → every call (including failures) lands in the audit/event log. A restart resets all
-  swaps; there is no tool that lists live divergence from the built jar — if you've lost track,
-  restart.
+  swaps, and nothing else does: a rebuilt jar on disk does not change what is already loaded.
 - **Ask before you swap: `query_class` prechecks it** (0.96.0). Its `hotswap` block says whether the
   classpath default will work on that class (`classpath_default`) and whether the class is one that
   may be redefined at all (`safe` — false for a mixin target or a Minecraft class), which is the
@@ -538,7 +654,7 @@ plugin beside a shim is always that shim's plugin — which matters because the 
 unit and a mismatched pair answers wrongly instead of refusing. The `toolkitInit` copy is
 write-if-absent like everything else that task writes, so it is a starting point, not a refresh.
 
-### `mcptoolkit_bridge.js` — the door (plugin 0.7.0; `docs/models/BLOCKBENCH_BRIDGE_DESIGN.md`)
+### `mcptoolkit_bridge.js` — the door (plugin 0.11.0; `docs/models/BLOCKBENCH_BRIDGE_DESIGN.md`)
 
 - Replaces the third-party "Blockbench MCP" plugin. Load it, then Tools > MCP Toolkit Bridge >
   Start and "Always allow" the one permission it asks for (`process`, which is how a plugin reaches
@@ -558,6 +674,21 @@ write-if-absent like everything else that task writes, so it is a starting point
   one window, `off` nothing; the first port to scan is in Tools > MCP Toolkit Bridge > Settings.)
   `ping` says which window this session got: `blockbench: {port, window, held, session}`. Remove any `blockbench` server registered beside the
   toolkit in `.mcp.json` / `~/.claude.json`: two paths to one app pay two prefixes.
+- **The MCP Dock, and what a person can do to a window (plugin 0.8.0 to 0.11.0;
+  `docs/models/BLOCKBENCH_ISOLATION_DESIGN.md` sections 11 to 13).** Tools > MCP Toolkit Bridge >
+  Open the MCP Dock opens one window that governs the rest: it lists every bridge window on its
+  START SCREEN (a panel is invisible in a window with no project), hands windows out, and is never
+  claimed. Each row has Focus, **Give to agents** or **Take back**, and Close; a row with a project
+  open asks once. At most three windows are opened for agents (Settings, read live in every
+  window), and an empty agent window idle for fifteen minutes is recycled. **What you do reaches the
+  session in the window** (0.11.0): a Take back, a recycle, Stop the bridge, or closing the window by
+  hand is SAID to the session on its next call and on `ping` (`held: "none"`, with the sentence),
+  and its next call gets a window of its own - the call that carried the news still runs, because a
+  claim steers discovery and is never enforced. Every call is queued; what is running and how many
+  wait is on `/hello`, in Status... and on the start screen, and a call whose caller gave up is
+  dropped rather than run late. Stop the bridge in the dock resigns it. Settings are one store: a
+  change made in any window is the one every window applies. The door refuses a request with a
+  non-loopback `Origin` (a browser tab) with 403, the same rule as the game's own doors.
 - **Sessions and projects.** Every call is queued, so two sessions never interleave inside the app.
   A session that makes or opens a project (`project op:new` / `op:open` / `op:select`) is BOUND
   to it and every later call without `project` goes there; a call may always name `project`. An
@@ -567,7 +698,8 @@ write-if-absent like everything else that task writes, so it is a starting point
   every tab, its holder, and the live sessions.
 - **The surface** (26 tools; the `art` profile keeps all but `trigger_action`): `get_project_info`,
   `project`, `list_outline`, `find_elements_by_criteria`, `get_selection`, `inspect` (bounds, face
-  rectangles, the envelope of neighbours on a bone, AABB overlaps, UV collisions), `place_cube`,
+  rectangles, the envelope of neighbours on a bone, AABB overlaps, UV collisions), `place_cube`
+  (`uv:"pack"` lays each cube's box UV out in free space on the sheet, 0.12.0),
   `modify_cube`, `add_group`, `element`, `create_texture`, `apply_texture`, `list_textures`,
   `get_texture`, `texture` (ASCII read, rects, resize, recolor, flip, load, write), `paint_faces`,
   `paint_ascii`, `capture_screenshot` (`fit`, `views` for a contact sheet), `set_camera_angle`,
@@ -575,11 +707,15 @@ write-if-absent like everything else that task writes, so it is a starting point
   Every schema refuses an undeclared argument by name; every edit is one undo entry and replies
   with its readback (face rectangles, envelope gaps); `look:true` on an edit returns the viewport
   on the same reply. `risky_eval` takes comments and awaits a Promise; a rejection is an error
-  reply. It puts two locals in scope: `PROJECT`, the project this call resolved to, and `GAME`,
-  the bridge URL of the game this session drives. The older plugins' globals are reached through it
-  and BOTH take them: `mcptoolkitPush({project: PROJECT, bridge: GAME})`,
-  `mcptoolkitEntity({action, project: PROJECT, bridge: GAME})` — hand them over rather than letting
-  a plugin read the global `Project` or a port it guessed.
+  reply. It puts three locals in scope: `PROJECT`, the project this call resolved to (null with
+  none open), `GAME`, the bridge URL of the game this session drives, and `SESSION`, this session's
+  id (0.11.0). The older plugins' globals are reached through it and BOTH take them:
+  `mcptoolkitPush({project: PROJECT, bridge: GAME})`,
+  `mcptoolkitEntity({action, project: PROJECT, bridge: GAME, session: SESSION})` — hand them over
+  rather than letting a plugin read the global `Project` or a port it guessed. An explicit null is
+  REFUSED by both plugins (sync 0.5.0, entity 0.4.0): `GAME` is null when the shim never told this
+  window which game the session drives, and a plugin handed null names the fix rather than dialling
+  the stored port.
 - **Pictures.** `capture_screenshot` and `get_texture` take the shim's `max`; a viewport is
   cropped to its content by the budget, a texture sheet is only ever resized (the picture itself
   says which it is). `fit:true` frames the model as DISPLAYED (Blockbench moves a `java_block`
@@ -589,9 +725,14 @@ write-if-absent like everything else that task writes, so it is a starting point
 
 ### `mcptoolkit_sync.js` — push assets to the game
 
-- Plugin: `mcp-toolkit/blockbench/mcptoolkit_sync.js` (v0.4.0). Load once in Blockbench via
+- Plugin: `mcp-toolkit/blockbench/mcptoolkit_sync.js` (v0.5.0). Load once in Blockbench via
   File > Plugins > Load Plugin from File. Needs the game client running with the bridge up on the
   port `bridge` names, except for `target: 'source'`.
+- **`namespace` is required too (0.5.0).** The default was the literal `villagejobs` - one mod's
+  name, under which every other mod's push landed silently. Pass the mod id, or set it once per
+  project: `mcptoolkitPushSettings({namespaces: {'<project>': 'yourmod'}})`; the dialog remembers
+  what you type. `target` is checked against `live | source | both` (an unknown one used to push
+  nothing and answer ok).
 - **`bridge` is required and has no default (0.4.0, `TODO.md` 1.9).** Until then this plugin carried
   a hardcoded `http://127.0.0.1:25599/cmd`, and since B0 the port is a project constant that NAMES
   the project (25640 villagejobs, 25641 menagerie, 25642 rocketeer, 25643 nijntje, 25599 the
@@ -609,7 +750,7 @@ write-if-absent like everything else that task writes, so it is a starting point
   `mcptoolkitPush(opts)` globally; call it from `risky_eval`:
 
   ```js
-  mcptoolkitPush({project: PROJECT, bridge: GAME, namespace:'villagejobs', folder:'textures/block'})
+  mcptoolkitPush({project: PROJECT, bridge: GAME, namespace:'yourmod', folder:'textures/block'})
   ```
 
   Pixels travel canvas → bridge → game entirely inside Blockbench; the return value is a compact
@@ -645,7 +786,7 @@ write-if-absent like everything else that task writes, so it is a starting point
 
 ### `mcptoolkit_entity.js` — author an entity, judge it in the running game
 
-- Plugin: `mcp-toolkit/blockbench/mcptoolkit_entity.js` (v0.3.0). Loaded the same way, and it needs
+- Plugin: `mcp-toolkit/blockbench/mcptoolkit_entity.js` (v0.4.0). Loaded the same way, and it needs
   **`mcptoolkit_sync.js` loaded beside it** — it drives that plugin's `mcptoolkitPush` rather than
   re-implementing the transport, and names it if it is missing. Panel: Tools > MCP Toolkit Entity.
   Headless: `mcptoolkitEntity(opts)`, last result mirrored into `mcptoolkitEntityLast`, never
@@ -664,6 +805,9 @@ write-if-absent like everything else that task writes, so it is a starting point
   pack, and stages a preview entity wearing it. What comes back is a summary **plus the client's own
   verdict on the geometry** — `parse: "ok"`, or `parse: "error"` carrying the loader's sentence — so
   a broken export is read rather than guessed at from a screenshot. No bytes in the transcript.
+  Add `session: SESSION` (0.4.0) and the stage slot is per session (`preview-<id>`), so two sessions
+  pushing into one game keep their own body; a stage that fails after the push landed answers
+  `ok:false` WITH `pushed` and `model`, so you do not push again.
 
 | call | for |
 |---|---|
@@ -671,6 +815,7 @@ write-if-absent like everything else that task writes, so it is a starting point
 | `{action:'convert', model, file?}` | the JSON only, no game needed; `file:` converts a `.bbmodel` off disk without opening it |
 | `{action:'verify'}` | the check battery — SAT overlap over **every** part pair, shared-face planes, the deliberate 1px sink as a named tolerance, and a UV audit. No game needed |
 | `{action:'stage'\|'clear'\|'list', bridge}` | drive `stage_entity` directly: re-stage what is already pushed, despawn, or ask what is out there |
+| `{action:'flipbook', clip, frames?, times?, bridge, session}` | a clip judged in the game as ONE picture: push, then N copies frozen at N times in a row; the reply's `render` object is the whole argument for the `render` tool. `clear` sweeps the row (0.5.0) |
 | `{action:'promote', namespace:'yourmod'}` | write the JSON + PNG into a mod's `src/main/resources` (below) |
 
 Facts that bite:
@@ -835,7 +980,14 @@ below still applies to every screen that is NOT a document — vanilla's, anothe
 your own hand-written ones.
 
 - Author a document: `ui_doc` (`read` / `lint` / `add` / `set` / `move` / `remove` / `generate` /
-  `preview` / `attach` / `detach`), and `open_screen {ui, edit:true}` for the in-game editor. `lint`
+  `preview` / `attach` / `detach` / `refresh`), and `open_screen {ui, edit:true}` for the in-game
+  editor. **`refresh` (0.156.0) is the one op that reads the SOURCE file rather than editing it**:
+  a document addressed as `<mod>:<screen>` is loaded through the resource manager, which in a dev
+  run is `build/resources/main`, so a write to `src/` is invisible until something mirrors it —
+  `refresh` mirrors it, re-parses, and rebuilds a preview that is showing it. That is what the disk
+  feed calls when you save a `.ui.json` in your editor; call it yourself if you are not running the
+  daemon. The reply is the parse verdict either way, and it is refused while the in-game editor
+  holds the document dirty, exactly as a mutation is. `lint`
   answers with no client and no world; `check_layout` on an open preview is its live half, and the one
   that can measure text.
 - **Edit the REAL screen while it is open**: with your mod's screen up, `ui_doc op:"attach"` (or
@@ -878,6 +1030,9 @@ your own hand-written ones.
   and not `AbstractWidget`s, so `get_screen` counts them in `unenumerated_listeners` and cannot name
   them — on the vanilla world list that is all eight worlds. Rows are clickable only by raw x/y, and
   scrolling one into view does not make it nameable. (RELEASE_1 §D6.)
-- Loop for title-screen-reachable screens: edit layout code → `compileJava` → `hotswap_class` →
+- Loop for title-screen-reachable screens: edit layout code → `hotswap_class {compile: true}` →
   `open_screen` → `check_layout`. Container screens can't be constructed by tool (they need a
-  server-side menu): re-interact with the block after the hotswap instead.
+  server-side menu): re-interact with the block after the hotswap instead, or pass
+  `hotswap_class {reinit: true}`, which re-runs `init()` on the live screen in place and is the only
+  route that works for a container screen (0.152.0). That bullet was for years the only place this
+  manual mentioned re-entry at all; the general rule is in the `hotswap_class` section above.

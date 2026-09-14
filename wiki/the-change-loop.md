@@ -4,6 +4,11 @@ The everyday rhythm of modding with a live bridge. **What you changed decides ho
 game**, and only one of the routes costs you a restart. Getting this right is the difference between
 a ninety-second wait per iteration and a two-second one.
 
+Since 0.156.0 there is a route above all of them where you call nothing at all: you save the file
+and it is in the game. That is the first section, because if you are running the daemon it changes
+what the rest of this page is *for* — it stops being a set of instructions and becomes the map of
+what is happening on your behalf.
+
 This page covers the routes, how to confirm a change actually landed (harder than it sounds), and
 how to move a change from the live preview into your source tree when it is right. It does not cover
 what to *do* with each kind of content — those are the [Making things](README.md#making-things)
@@ -11,6 +16,7 @@ pages.
 
 ## On this page
 
+- [The shortest route: write the file](#the-shortest-route-write-the-file)
 - [The decision table](#the-decision-table)
 - [How it works: three different mechanisms](#how-it-works-three-different-mechanisms)
   - [Live packs — assets and data](#live-packs--assets-and-data)
@@ -25,6 +31,60 @@ pages.
 
 ---
 
+## The shortest route: write the file
+
+With `mmcpd` running and your project added to it ([Getting
+started](getting-started.md#optional-one-daemon-for-every-project)), the daemon watches your
+project's `src/` and lands every change in the running game itself. You save a texture in your
+image editor; about five seconds later it is on the block you are looking at. Nobody called
+`push_asset`. An agent working in your repository gets the same thing from an ordinary file
+write — it does not need to know the routing table at all.
+
+**What it does with each kind of file** is exactly the decision table below, applied for you:
+
+| You saved | It calls |
+|---|---|
+| A texture, model, blockstate, sound or lang file under `resources/assets/` | `push_asset`, then **one** `reload_resources` for everything that went quiet together |
+| A `.ui.json` screen document | `ui_doc refresh` — the op that mirrors your source file into the loaded pack and re-parses it |
+| Anything under `resources/data/` | `push_data`, then one `reload_data` (a world has to be loaded) |
+| A `.java` file | **one** `hotswap_class {compile: true}` for the whole batch — one compile, not one per file |
+| A deletion | `clear_assets` / `clear_data`, so the built copy comes back |
+
+**Every change gets a row, and the row is the honest part.** `node mcp-server/daemon.mjs changes
+--follow` tails it; inside a session, `get_events {type: "edit"}` reads the same rows out of the
+game's own event stream, which is how a second session learns about an edit nobody told it about.
+The row says what became of your file:
+
+- **`swapped`** — it landed.
+- **`refused`** — nothing was done, deliberately. The commonest case is *identical bytes*: a save
+  that changed nothing, a formatter re-writing a file, an editor's autosave. That is decided from a
+  content hash **before the game is dialed**, so a no-op save costs no reload and no flicker.
+- **`not-yet`** — a `.java` file that does not compile yet. Normal while you are mid-edit. The
+  next save that compiles lands it.
+- **`pending-rebuild`** — real, and structural. A class the JVM never loaded, a new field or
+  method, `fabric.mod.json`, a `*.mixins.json`. **This is the row that means run `rebuild.ps1`
+  now**, and
+  it is the one worth watching for, because nothing else tells you.
+- **`none`** — the game is down, or that file does not land anywhere. The row is still kept.
+
+Three limits, said plainly.
+
+**It does not make any route do more than it could.** A hotswap through the feed is the same
+hotswap: bodies only, and the bytes are new while the objects are old. If your swap lands and the
+screen in front of you does not change, that is still the re-entry problem below, and fixing it is
+still a tool call (`hotswap_class {reinit: true}`) — a file save has no way to ask for it.
+
+**It cannot tell who edited the file.** A write on disk carries no author, so every row from this
+feed is attributed `unknown`. The feeds that will know — your editor's buffer, your undo stack —
+are designed and not built.
+
+**It is one more process to have running.** Nothing supervises `mmcpd` yet. If saves are not
+landing, check it is up (`daemon.mjs status`) before suspecting anything else. `MMCPD_WATCH=0`
+turns the watching off while leaving the daemon serving.
+
+**If you are not running the daemon, nothing below changes.** The rest of this page is the manual
+route, and it is still the route — the daemon is a convenience over it, not a replacement for it.
+
 ## The decision table
 
 Find what you changed. This is the short form; `LIVE_MODDING.md` opens with the full one, including
@@ -34,7 +94,8 @@ the cases this leaves out.
 |---|---|---|
 | A **client asset** — texture, model, blockstate, sound, lang | `push_asset` → live resource pack | seconds |
 | **Server data** — recipe, loot table, tag, advancement, function, predicate | `push_data` → live world datapack | seconds |
-| A Java **method body** | `gradlew compileJava` → `hotswap_class` | seconds |
+| A Java **method body** | `hotswap_class {compile: true}` — compiles and swaps in one call | seconds |
+| A Java **mixin body** — what an existing `@Inject` or `@Redirect` does | `hotswap_class {compile: true}` on the **mixin** class, never its target | seconds |
 | Java **structure** — a new class, field, tool or registration | `tools/rebuild.ps1` | minutes, full restart |
 | A **Blockbench project** (model + textures) | push from Blockbench | seconds |
 | A **datapack dynamic registry** (a mod's own registered-synced registry) | edit, then **leave and re-enter the world** | world reload |
@@ -86,19 +147,58 @@ datapack file, and it is the only way to validate worldgen at all.
 
 ### Hotswap — Java method bodies
 
-`hotswap_class` redefines a loaded class in the running JVM. Compile first (`gradlew compileJava`),
-then swap.
+`hotswap_class` redefines a loaded class in the running JVM. One call is the whole route:
+
+```
+hotswap_class {class: "com.example.mymod.LanternBlock", compile: true}
+```
+
+`compile: true` runs the Gradle compile first, in the project that class's bytes come from. It is not
+a shortcut around typing `gradlew compileJava` in another window — it removes a failure that version
+cannot see. The loaded class states where it was loaded from; that directory states the project and
+the task (`build/classes/java/main` is built by `compileJava`, `build/classes/java/client` by
+`compileClientJava`); the swap then reads its bytes from the place that compiler just wrote them. A
+compile aimed at one project and a swap aimed at another — each reporting success, together changing
+nothing — is not expressible, because there is one path and both halves are derived from it. A failed
+compile **is** the reply, with javac's own file, line and column, and nothing is redefined.
+
+Only compile tasks ever run this way. `jar` and `build` are the ones that deadlock against a running
+game; that route is `tools/rebuild.ps1`.
 
 The limits are the JVM's, not the toolkit's:
 
 - **No added or removed fields, methods or classes.** Bodies only. Anything structural is a rebuild.
-- **Mod classes only.** A mixin-transformed or remapped Minecraft class redefined from compiled
-  sources **silently loses its load-time transforms** — the swap appears to work and the game is
-  subtly wrong.
-- It needs `-Djdk.attach.allowAttachSelf=true` on the game JVM, which the convention plugin sets on
-  both the client and server runs.
-- **Batch multi-class edits**: `{classes: ["a.b.C", "a.b.D"]}` redefines atomically in one JVM
-  operation, so no tick observes a half-applied change.
+- **Batch multi-class edits**: `{classes: ["a.b.C", "a.b.D"], compile: true}` redefines atomically in
+  one JVM operation, so no tick observes a half-applied change.
+- Two launch flags, both set by the convention plugin on the client and server runs:
+  `-Djdk.attach.allowAttachSelf=true`, without which the tool cannot attach at all, and
+  `-Dmixin.hotSwap=true` for the mixin route below. Neither can be added to a game already running.
+
+**Mixins swap — the mixin class, never its target.** A mixin *target* redefined from compiled sources
+loses its load-time transforms, so the tool refuses it and names the mixin to swap instead. The mixin
+itself works: Mixin ships its own hot-swap agent, the toolkit arms it, and redefining the mixin makes
+Mixin re-apply it to its targets. Changing what an existing injector *does* lands; adding an
+`@Inject` adds a method to the target and is structural. A remapped Minecraft class stays off limits
+for the reason it always was.
+
+**The bytes are new, the objects are old.** This is the part that costs people an afternoon. A
+redefine replaces bytecode; it does not rebuild what the old bytecode already built and it does not
+re-run a static initialiser. A screen keeps the widgets its old `init()` made, a mob keeps the goal
+list its old `registerGoals()` made, a registry keeps the block built at registration — and every one
+of those swaps reports the same success. **A swap is visible only where the code runs again.** Every
+reply carries a `reentry` block saying, per class, what is still holding old state and what would
+make the code run again, and `reinit: true` performs the two re-entries nothing else reaches: it
+rebuilds the current screen's widgets, and re-runs `registerGoals()` on every loaded instance of a
+swapped mob. `reinit` is an act on the live world — re-registering goals clears any goal that was
+added from outside `registerGoals()`.
+
+**Bytes identical to what is already running are refused**, rather than reported as a redefine. That
+refusal is the forgotten compile, caught. When you passed `compile: true` it means something else and
+says so: the compile ran, so the edit is not in the source tree that project compiles.
+
+**`{status: true}` lists what this JVM is running that its jar is not** — every class swapped in this
+session, when, from where, and the digest now installed. A restart resets all of it, and nothing else
+does; a rebuilt jar on disk does not change what is already loaded.
 
 **Ask before you swap.** `query_class` prechecks it: its `hotswap` block says whether the classpath
 default will find fresh bytes for that class, and whether the class may be redefined at all — the
@@ -224,13 +324,16 @@ reload and an absent recipe look identical from the game.
 **A method body.**
 
 ```
-query_class {class: "com.example.mymod.LanternBlock"}     # hotswap.safe? classpath_default?
-gradlew compileJava
-hotswap_class {class: "com.example.mymod.LanternBlock"}
+query_class {class: "com.example.mymod.LanternBlock"}                    # hotswap.safe?
+hotswap_class {class: "com.example.mymod.LanternBlock", compile: true}   # compile, then swap
+# call the method again — a swap only shows where the code runs
 ```
 
-If `query_class` says `safe: false`, stop — that is a mixin target or a Minecraft class and swapping
-it will lose its transforms silently. Rebuild instead.
+If `query_class` says `safe: false`, stop — that is a mixin target or a Minecraft class. Swap the
+mixin instead, or rebuild.
+
+If the swap lands and the game looks unchanged, read the `reentry` block in the reply before touching
+the code again. It is usually right: nothing has run the new bytes yet.
 
 ## An agent session
 
@@ -267,6 +370,16 @@ tree.
 
 ## Things to keep in mind
 
+**You saved the file and nothing happened.** If you are relying on the disk feed, check the daemon
+is running before anything else — `node mcp-server/daemon.mjs status`. If it is running, read the
+row: `node mcp-server/daemon.mjs changes` (or `get_events {type: "edit"}`) says what it decided,
+and `refused` on a save you thought you changed means the bytes are identical to what is already
+there.
+
+**The daemon says `pending-rebuild` and you keep editing.** That row is not a warning, it is the
+answer: nothing you write into that file will land until you rebuild. New class, new field, new
+method, `fabric.mod.json`, a mixins config — all structural, all `rebuild.ps1`.
+
 **Your asset will not change no matter what you do.** Check `list_assets` for a forgotten override
 first. It is almost always this.
 
@@ -277,11 +390,16 @@ the only place that fact exists.
 through untouched. Leave the world and come back.
 
 **A hotswapped mixin target is silently wrong.** Redefining a mixin-transformed or Minecraft class
-from compiled sources loses its load-time transforms. `query_class` tells you before you do it.
+from compiled sources loses its load-time transforms. The tool refuses it and names the mixin to swap
+instead; `query_class` tells you one call earlier.
 
-**Nothing lists how far the running game has drifted from your source.** Swaps and overrides
-accumulate and there is no divergence report. If you have lost track, restart. It is cheap and it is
-the honest answer.
+**The swap said `redefined: 1` and the game did not change.** The bytes are new and the objects are
+old. Nothing has run the new code yet — read the `reentry` block, and use `reinit: true` for a screen
+that is already open or a mob that is already loaded.
+
+**You have lost track of how far the running game has drifted.** `hotswap_class {status: true}` lists
+every class this JVM has been swapped away from its jar, with times and digests. (Until 0.152.0 the
+honest answer here was "restart"; the process was holding the fact all along.)
 
 **Never `gradlew build` while the game runs.** The game holds the jar.
 
@@ -308,6 +426,8 @@ just baked into the jar, and you will conclude the build did not work.
 
 **Reference**
 
+- `LIVE_MODDING.md` § *The disk feed* — the classifier in full, the result vocabulary, and what the
+  feed cannot attribute.
 - `LIVE_MODDING.md` § *Decision table* — the full table, including the rows this page omits, and a
   stated list of what release 1 does **not** do.
 - `LIVE_MODDING.md` § *The live packs* — pack semantics in detail.

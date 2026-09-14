@@ -59,13 +59,22 @@
 // dated by the dock but only closed by a person. With no dock open, everything below falls back to
 // exactly what 0.7.0 did.
 //
+// AN OWNED INSTANCE (HOST_DESIGN.md section 11 as built, 0.13.0). Under the daemon (mmcpd) none of
+// the window government above applies, because there is no shared Blockbench to govern: the daemon
+// launches `Blockbench.exe --userData <dir>` PER SESSION, a separate process with its own lock,
+// settings and plugin registrations, and tells this plugin through the environment which port to
+// bind (MCPTK_BLOCKBENCH_PORT) and whose it is (MCPTK_BLOCKBENCH_OWNER). In that mode the plugin
+// binds exactly that port and no other, never looks for a dock, never beats, never sweeps itself
+// away, and accepts a claim from the owner alone - the daemon started it and the daemon ends it.
+// `GET /hello` says `owned: {owner, port}` so a shim (and the daemon) can tell.
+//
 // INSTALL: File > Plugins > Load Plugin from File; Tools > MCP Toolkit Bridge > Start; allow
 // `process` ("Always allow for this plugin"). The shim finds it at http://127.0.0.1:25801.
 (function () {
     'use strict';
 
     const PLUGIN_ID = 'mcptoolkit_bridge';
-    const PLUGIN_VERSION = '0.9.0';
+    const PLUGIN_VERSION = '0.13.0';
     const DEFAULT_PORT = 25801;
     /** How far up from the base port a window looks for one of its own (design section 6.3): the
      *  port a window wins IS its name, and this is how many windows one machine can name. */
@@ -91,10 +100,30 @@
      *  sessions leaves no row of empty windows behind (design section 10). */
     const EMPTY_GRACE_MS = 60000;
     const emptyMs = () => (isNumLike(settings.empty_grace_ms) ? settings.empty_grace_ms : EMPTY_GRACE_MS);
+    /** How long a claim goes without a call before it stops PROTECTING an empty window (section
+     *  12.3). A presence socket is the liveness of a PROCESS, not of work: measured 2026-09-12,
+     *  three windows were held by Claude sessions idle since 9 and 10 September, every one of them
+     *  empty, every claim reading `connected: true`, so `sweep` could never fire. A claim that has
+     *  done nothing for this long is not a reason to keep a window nobody has anything open in. It
+     *  never touches a window with a project in it - a dropped socket is not consent to destroy
+     *  work (design section 6.2), and neither is an idle one. */
+    const IDLE_CLAIM_MS = 15 * 60 * 1000;
+    const idleMs = () => (isNumLike(settings.idle_claim_ms) ? settings.idle_claim_ms : IDLE_CLAIM_MS);
+    /** How many agent windows this Blockbench will make. The ceiling the PLUGIN enforces, which is
+     *  the only place it can be enforced: a shim is a copy extracted into each consumer repo and a
+     *  running session keeps the copy it started with for days (section 12.2 - ArmorPieces pinned
+     *  toolkit 0.140.0 and its sessions were still demanding a window each two days after the shim
+     *  stopped doing that). A person's own windows are not counted and never refused. */
+    const MAX_AGENT_WINDOWS = 3;
+    const maxAgentWindows = () => (isNumLike(settings.max_agent_windows) ? settings.max_agent_windows : MAX_AGENT_WINDOWS);
     /** How often an agent-born window asks whether it is still needed. */
     const SWEEP_MS = 15000;
-    /** An ask nobody came for is dropped rather than handed to whatever window a person opens next. */
-    const PENDING_TTL_MS = 120000;
+    /** An ask nobody came for is dropped rather than handed to whatever window a person opens next.
+     *  A HANDOFF LIVES AS LONG AS ITS ASK (section 13): until 0.11.0 the handoff lived 120 s while
+     *  the ask it belonged to was counted for 20 s, so a window a person opened by hand in the gap
+     *  became an agent window pre-claimed for a session that had already given up. One clock now,
+     *  `birth_ms`, and `dropAsked` drops the handoff with the ask. */
+    const pendingTtlMs = () => birthMs();
     /** How many calls the panel remembers, so a person can see what the session in this window is
      *  doing without reading a transcript. */
     const RECENT_MAX = 12;
@@ -102,7 +131,19 @@
      *  calls it SILENT. Push and not poll, so that "last activity" is the window's own record rather
      *  than something the dock infers (BLOCKBENCH_ISOLATION_DESIGN.md section 11.8). */
     const BEAT_MS = 5000;
-    const BEAT_STALE_MS = 20000;
+    /** How long without a beat before a window is called SILENT - and the number is set by
+     *  CHROMIUM, not by us (section 12.7). Measured 2026-09-12 in the running app: every bridge
+     *  window reports `visibilityState: "hidden"` (they are covered, or minimised), and a window
+     *  hidden for more than five minutes gets INTENSIVE THROTTLING - a 500ms interval ticked ZERO
+     *  times in eight seconds in the dock, against six in a window hidden for less. Chromium's floor
+     *  there is one timer callback a MINUTE, so a 20-second staleness threshold called every
+     *  background window "wedged, or an older plugin" - which is the ordinary state of every window
+     *  in this design, the dock most of all. 150 seconds is two and a half of Chromium's minutes: 90
+     *  was tried first and a healthy background window STILL read silent at it, because the floor is
+     *  "at most once a minute" and says nothing about where in the minute. Nothing acts on `silent`
+     *  automatically, so being generous costs only that a genuinely wedged window is named a minute
+     *  later. */
+    const BEAT_STALE_MS = 150000;
     const beatMs = () => (isNumLike(settings.beat_ms) ? settings.beat_ms : BEAT_MS);
     const beatStaleMs = () => (isNumLike(settings.beat_stale_ms) ? settings.beat_stale_ms : BEAT_STALE_MS);
     /** How often the DOCK scans the port range. The scan says what is SERVING; the beats say what is
@@ -117,8 +158,10 @@
     const BIRTH_MS = 20000;
     const birthMs = () => (isNumLike(settings.birth_ms) ? settings.birth_ms : BIRTH_MS);
     /** The handoff a window leaves for the window it asks for. Its OWN key, read-modify-written on
-     *  its own, because `settings` is written back WHOLE and two windows doing that would clobber
-     *  each other's keys (design section 5). */
+     *  its own: until 0.11.0 `settings` was written back WHOLE from a copy read once at boot, and
+     *  two windows doing that clobbered each other's keys (design section 5). `saveSettings` now
+     *  reloads before it merges, which closes that for the settings too, but a list that several
+     *  windows append to and consume from still wants its own key. */
     const PENDING_KEY = 'mcptoolkit_bridge.pending';
     const BODY_LIMIT = 32 * 1024 * 1024;
     const FACES = ['north', 'south', 'east', 'west', 'up', 'down'];
@@ -141,9 +184,21 @@
     // the dock (section 11.7): a window becomes the dock by adopting a `dock` handoff or by the menu
     // action, so a stale port left by a crash heals itself - whoever answers there says `role` and a
     // window that is not the dock 404s `/dock/hello`.
-    const settings = { port: DEFAULT_PORT, autostart: true, hold_ms: DEFAULT_HOLD_MS, shared_port: null, dock_port: null };
+    const settings = { port: DEFAULT_PORT, autostart: true, hold_ms: DEFAULT_HOLD_MS, shared_port: null, dock_port: null,
+        max_agent_windows: MAX_AGENT_WINDOWS, idle_claim_ms: IDLE_CLAIM_MS };
     const holdMs = () => (isNumLike(settings.hold_ms) ? settings.hold_ms : DEFAULT_HOLD_MS);
     function isNumLike(v) { return typeof v === "number" && Number.isFinite(v) && v > 0; }
+    /**
+     * The base of every scan this window makes. PORT 0 IS PORT 0: it is "any free port" with no
+     * neighbours (the harness uses it), and until 0.11.0 `isNumLike` folded it to the shipped
+     * 25801 here while `start` did not - so a harness listening on an ephemeral port scanned the
+     * developer's real range, found their dock and registered test processes in its roster (12.8
+     * saw the symptom at the END of a run and moved the base; this was the other half).
+     */
+    function scanBase() {
+        if (settings.port === 0) return 0;
+        return isNumLike(settings.port) ? settings.port : DEFAULT_PORT;
+    }
     function loadSettings() {
         try {
             const raw = localStorage.getItem(STORE_KEY);
@@ -151,10 +206,42 @@
         } catch (e) { /* a cleared storage is the defaults */ }
         return settings;
     }
+    /**
+     * SETTINGS LIVE IN THE STORE, NOT IN THE WINDOW (design section 13). Until 0.11.0 `settings` was
+     * read once at `onload` and every window enforced its own copy: a ceiling changed in window A
+     * was not the ceiling the dock applied, and the next `dock_port` hint saved from another window
+     * wrote that window's whole stale copy back over A's change. Two halves close it: the WRITE
+     * reloads before it merges, so a save carries only the keys it was given; and the READ listens
+     * to the `storage` event, which fires in every OTHER window of the same origin when
+     * `localStorage` changes - measured 2026-09-13 between two real Blockbench windows, both hidden,
+     * three writes out of three including a delete - so every reader (`maxAgentWindows()`,
+     * `idleMs()`, the rest) sees one value everywhere within the same tick.
+     */
     function saveSettings(patch) {
+        loadSettings();
         Object.assign(settings, patch || {});
         try { localStorage.setItem(STORE_KEY, JSON.stringify(settings)); } catch (e) { /* not worth failing */ }
         return settings;
+    }
+    let storageListener = null;
+    function onStorage(e) {
+        if (!e || e.key !== STORE_KEY) return;
+        loadSettings();
+        // The one setting a window READS INTO ITS OWN STATE: whether the port it holds is the
+        // handed-over one. Everything else is read through a function at the moment of use.
+        applyShare();
+        if (!claimable()) dropClaim('taken back');
+        refreshIdentity();
+    }
+    function watchStorage() {
+        if (storageListener || typeof window === 'undefined' || !window || typeof window.addEventListener !== 'function') return;
+        storageListener = onStorage;
+        try { window.addEventListener('storage', storageListener); } catch (e) { storageListener = null; }
+    }
+    function unwatchStorage() {
+        if (!storageListener) return;
+        try { window.removeEventListener('storage', storageListener); } catch (e) { /* gone */ }
+        storageListener = null;
     }
 
     // ------------------------------------------------------------------ small helpers
@@ -385,10 +472,28 @@
      * first window a person opens into a dock they never asked for.
      */
     let isDock = false;
+    /**
+     * The daemon's instance, or null: {owner, port}, read from the environment at `start` (the
+     * `process` grant is what reads it, so never before). An owned window is claimable by its owner
+     * only, is never the dock, never sweeps, and takes no role from anyone.
+     */
+    let owned = null;
+    function readOwned(proc) {
+        const env = proc && proc.env ? proc.env : null;
+        if (!env) return null;
+        const port = Number(env.MCPTK_BLOCKBENCH_PORT);
+        const owner = String(env.MCPTK_BLOCKBENCH_OWNER || '').trim();
+        if (!Number.isInteger(port) || port <= 0 || port >= 65536) return null;
+        return { port: port, owner: owner || null };
+    }
     /** The whole of a window's standing in one word, which is what the roster and the title show. */
-    function role() { return isDock ? 'dock' : agentBorn ? 'agent' : 'person'; }
+    function role() { return owned ? 'owned' : isDock ? 'dock' : agentBorn ? 'agent' : 'person'; }
     let claimedBy = null; // session id, or null
     let claimedAt = 0;
+    /** When the holder last had a call run in THIS window. The claim's own clock, and not the
+     *  session's `seen`: `seen` is refreshed by presence and by every scan, so it says the process
+     *  is there and nothing about whether anybody is working here (section 12.3). */
+    let claimUsedAt = 0;
     /**
      * The session holding this window, if the claim is still live - and "live" is NOT what it is for
      * a project binding. A binding survives a dropped socket for `hold_ms` because unsaved work is
@@ -402,8 +507,88 @@
         if (!s) return null;
         return connected(s) || now() - claimedAt <= graceMs() ? s : null;
     }
+    /** How long since the holder last did anything here, or null with no holder. */
+    function claimIdleMs() {
+        if (!claimHolder()) return null;
+        return now() - Math.max(claimUsedAt, claimedAt);
+    }
+    /**
+     * A claim that is live but has DONE NOTHING for `idleMs` (section 12.3). It is deliberately not
+     * folded into `claimHolder`, because the two answer different questions and a shim reads both:
+     * the holder is who the window is for and stays truthful, and this is whether being for them is
+     * still a reason to keep the window. Only ever consulted about an EMPTY window.
+     */
+    function claimIdle() {
+        const ms = claimIdleMs();
+        return ms !== null && ms > idleMs();
+    }
     function releaseDeadClaim() {
-        if (claimedBy && !claimHolder()) { claimedBy = null; armEmptyCheck(); refreshIdentity(); }
+        // Dead: the socket went and the grace ran out. Idle: the socket is there and the session
+        // has not worked here for a quarter of an hour with nothing open - which reads as `orphan`
+        // in the roster, so the dock hands the window to the next session that asks instead of
+        // making a fourth one.
+        if (claimedBy && !claimHolder()) {
+            claimedBy = null;
+            armEmptyCheck();
+            refreshIdentity();
+        } else if (claimedBy && claimIdle() && !projects().length) {
+            dropClaim('recycled: idle ' + Math.round((claimIdleMs() || 0) / 60000) + ' min with nothing open', true);
+            armEmptyCheck();
+            refreshIdentity();
+        }
+    }
+    /**
+     * EVICTION IS SAID, NOT ENFORCED (design section 13). A claim steers discovery and nothing else
+     * (6.3 stands), so until 0.11.0 nothing a person did to a window reached the session in it: the
+     * dock's Take back, the menu's take-back and the fifteen-minute recycle all dropped `claimedBy`
+     * while the shim kept its cached window and kept calling into it, and its `ping` went on
+     * answering `held: "this session"` out of its own cache. Two routes now carry the news, both
+     * ones the shim already has: every `/cmd` reply from a window whose holder is not the caller
+     * carries a `window` note (`evictionNote`), and the evicted session's PRESENCE responses in this
+     * window are written one last line and closed, so a shim between calls notices on its next
+     * poll (`reconcileWindow`). What this does NOT do is refuse the call that carried the news.
+     */
+    let lastEviction = null; // {session, reason, at} - what the next reply to that session should say
+    /**
+     * `tellPresence` closes the session's presence sockets here as well, and ONLY the recycle sets
+     * it: a presence socket is also what keeps that session's PROJECT BINDINGS alive, and a
+     * take-back or a role change happens to windows with work in them, where severing the socket
+     * would unbind a project the session still holds. A recycle only ever happens to an EMPTY
+     * window, so there is nothing behind the socket to lose, and a shim that is between calls has
+     * no other way to hear it.
+     */
+    function dropClaim(reason, tellPresence) {
+        const was = claimedBy;
+        claimedBy = null;
+        if (!was) return;
+        lastEviction = { session: was, reason: reason || 'released', at: now() };
+        if (tellPresence) evictPresence(was, reason || 'released');
+    }
+    /**
+     * The note a caller reads when this window is not theirs any more, stamped on a reply the way
+     * `sharedIdNote` is: the same place and shape, only while the condition holds. Only an AGENT
+     * window says it - a person's window was never anybody's to lose, and a shared one was never
+     * held by the sharer.
+     */
+    function evictionNote(sess) {
+        if (!sess) return null;
+        const h = claimHolder();
+        if (h && h.id === sess.id) return null;
+        const lost = lastEviction && lastEviction.session === sess.id ? lastEviction : null;
+        // The session this window was TAKEN FROM is told whatever the window is now - found live
+        // 2026-09-13: a Take back makes the window a person's, and an agent-only rule then left the
+        // evicted session calling into a person's window with nothing said, which is the very hole
+        // 13.1 opened with. Any other caller is told only by an agent window: a person's window
+        // was never anybody's to lose, and a curl by hand into one is not an eviction.
+        if (!lost && !agentBorn) return null;
+        const to = h ? 'session ' + h.id + (h.client ? ' (' + h.client + ')' : '') : 'nobody yet';
+        return {
+            port: boundPort, window: WINDOW_ID,
+            held_by: h ? holderBlock(h) : null,
+            reason: lost ? lost.reason : (h ? 'held by ' + to : 'unclaimed'),
+            note: 'window ' + WINDOW_ID + ' (port ' + boundPort + ') is not this session\'s' + (lost ? ' any more (' + lost.reason + ')' : '')
+                + ': it is held by ' + to + '. The next call resolves a window of its own; a project still open here is out of reach unless a person moves it.',
+        };
     }
     /** Is this a window an agent session may claim at all? */
     function claimable() { return !isDock && (agentBorn || allowAgents); }
@@ -412,6 +597,8 @@
      * been won: what is stored is a port, and the port is what names a window.
      */
     function applyShare() {
+        // An owned instance is its session's by construction; no stored hand-over can take it back.
+        if (owned) { allowAgents = true; return; }
         if (isNumLike(settings.shared_port)) allowAgents = boundPort === settings.shared_port;
     }
     /**
@@ -426,7 +613,7 @@
             if (allowAgents) saveSettings({ shared_port: boundPort });
             else if (settings.shared_port === boundPort) saveSettings({ shared_port: null });
         }
-        if (!claimable()) claimedBy = null;
+        if (!claimable()) dropClaim('taken back by the person at the keyboard');
         refreshIdentity();
         return windowBlock();
     }
@@ -446,12 +633,16 @@
             // as "yours to take", so a person's window has to go on answering yes to it, or an old
             // shim in a stale extraction would claim the very window the flip exists to protect.
             reserved: !claimable(),
-            claimed_by: h ? holderBlock(h) : null,
+            // `idle_s` rides on the holder because a shim and a person both need to know WHY a
+            // window it holds is about to be recycled, and "connected" alone cannot say (12.3).
+            claimed_by: h ? Object.assign(holderBlock(h), { idle_s: Math.round((claimIdleMs() || 0) / 1000), idle: claimIdle() }) : null,
             // Section 11.7: the ROLE is the whole standing in one word, and `dock` is the third value
             // 0.7.0 had no room for. `agent` and `reserved` stay beside it, unchanged, for a shim
             // from before this that reads those and has never heard of a dock.
             role: role(),
             dock_port: isNumLike(settings.dock_port) ? settings.dock_port : null,
+            // The daemon's instance (0.13.0): whose, and the port it was told to bind.
+            owned: owned ? { owner: owned.owner, port: owned.port } : null,
         };
     }
     /**
@@ -469,6 +660,9 @@
             open: projects().map((p) => ({ name: p.name, saved: !!p.saved })),
             dirty: projects().filter((p) => !p.saved).length,
             last_call: last ? { name: last.name, ok: last.ok, session: last.session, s_ago: Math.round((now() - last.at) / 1000) } : null,
+            // THE QUEUE IS VISIBLE (section 13): what is running and how many wait behind it. A
+            // shim that timed out asks this before blaming a dialog.
+            queue: queueBlock(),
         };
     }
     /**
@@ -487,6 +681,10 @@
             if (was) { claimedBy = null; armEmptyCheck(); refreshIdentity(); }
             return Object.assign({ ok: true, released: was }, windowBlock());
         }
+        if (owned && owned.owner && s.id !== owned.owner) {
+            return Object.assign({ ok: false, error: 'owned: this Blockbench instance was started by the daemon for session ' + owned.owner + ' and takes no other claim',
+                hint: 'your own session has an instance of its own; dial the MCPTK_BLOCKBENCH the daemon gave you' }, windowBlock());
+        }
         if (!claimable()) {
             return Object.assign({ ok: false, error: 'not an agent window: this one belongs to the person at the keyboard (a window is theirs unless it was opened for an agent)',
                 hint: 'POST /window to be given one of your own, or Tools > MCP Toolkit Bridge > Let agents use this window to hand this one over' }, windowBlock());
@@ -498,6 +696,10 @@
         }
         claimedBy = s.id;
         claimedAt = now();
+        // A rejoin IS activity: the shim came back and said so, which is the one thing an idle claim
+        // is missing. Restarting the clock here is why a live session's window never goes orphan
+        // under it while nothing is open.
+        claimUsedAt = 0;
         freeSince = null;
         refreshIdentity();
         return Object.assign({ ok: true, claimed: true, rejoined: h === s }, windowBlock());
@@ -520,13 +722,44 @@
         try {
             const raw = localStorage.getItem(PENDING_KEY);
             const a = raw ? JSON.parse(raw) : [];
-            return Array.isArray(a) ? a.filter((e) => e && isNumLike(e.at) && now() - e.at <= PENDING_TTL_MS) : [];
+            return Array.isArray(a) ? a.filter((e) => e && isNumLike(e.at) && now() - e.at <= pendingTtlMs()) : [];
         } catch (e) { return []; }
     }
     function writePending(list) {
         try { localStorage.setItem(PENDING_KEY, JSON.stringify(list)); } catch (e) { /* not worth failing */ }
     }
     function pushPending(id, kind) { writePending(readPending().concat([{ session: id || null, kind: kind || 'agent', at: now() }])); }
+    /**
+     * ASKS IN FLIGHT, which is NOT the same list as the handoffs above and cannot be.
+     *
+     * A handoff is CONSUMED the moment the new window adopts it, and the new window then takes a
+     * second or two more to win a port and start answering. In that gap the ask is invisible from
+     * both sides - no pending entry, no window in the scan - and a shim polling every few seconds
+     * asks again. Measured live 2026-09-12, twice: one session holding three windows, then two.
+     *
+     * So the ASK is recorded separately, expires on its own (`birth_ms`), and is what both the
+     * one-window-per-session rule and the ceiling actually count. Shared storage, because the asks
+     * do not all arrive at the same window; one entry per session, because a session asking twice
+     * is the case this exists for.
+     */
+    const ASKED_KEY = 'mcptoolkit_bridge.asked';
+    function readAsked() {
+        try {
+            const raw = localStorage.getItem(ASKED_KEY);
+            const a = raw ? JSON.parse(raw) : [];
+            return Array.isArray(a) ? a.filter((e) => e && isNumLike(e.at) && now() - e.at <= birthMs()) : [];
+        } catch (e) { return []; }
+    }
+    function noteAsked(id) {
+        const list = readAsked().filter((e) => e.session !== id).concat([{ session: id, at: now() }]);
+        try { localStorage.setItem(ASKED_KEY, JSON.stringify(list)); } catch (e) { /* not worth failing */ }
+        return list;
+    }
+    function dropAsked(id) {
+        try { localStorage.setItem(ASKED_KEY, JSON.stringify(readAsked().filter((e) => e.session !== id))); } catch (e) { /* not worth failing */ }
+        // The handoff goes with the ask: a window born after this must not become that session's.
+        dropPending(id);
+    }
     function dropPendingKind(kind) {
         const list = readPending();
         const i = list.findIndex((e) => (e.kind || 'agent') === kind);
@@ -548,7 +781,31 @@
      * Become the window somebody asked for, if anybody did. Called once a port is won, because the
      * port is what a shim will come looking for.
      */
+    /**
+     * A HANDOFF IS FOR A WINDOW THAT WAS JUST BORN, and a plugin RELOAD looks exactly like a birth
+     * from in here: `onload` runs, a port is won, and the entry meant for somebody else's new window
+     * is consumed. Seen live 2026-09-12 while reloading four windows: each reload ate a pending ask,
+     * so the windows that actually appeared registered as the PERSON'S - which the ceiling does not
+     * count, so the next ask made another (section 12.4).
+     *
+     * `sessionStorage` is the one store with exactly the right scope to tell the two apart: it is per
+     * WINDOW and it survives a plugin reload, where `localStorage` is shared by every window and a
+     * module-level flag dies with the reload. A renderer that has run this plugin before is not a
+     * newborn. Where it cannot be read at all, the old behaviour stands: adopt, and be wrong in the
+     * direction that gives a session the window it paid for.
+     */
+    const BORN_KEY = 'mcptoolkit_bridge.born';
+    let newborn = true;
+    function markBorn() {
+        try {
+            if (typeof sessionStorage === 'undefined' || !sessionStorage) return true;
+            const seen = sessionStorage.getItem(BORN_KEY);
+            sessionStorage.setItem(BORN_KEY, '1');
+            return !seen;
+        } catch (e) { return true; }
+    }
     function adoptPending() {
+        if (!newborn) return false;
         const e = takePending();
         if (!e) return false;
         // A `dock` handoff makes this window the dock instead (section 11.7). It is the one kind the
@@ -576,21 +833,81 @@
      * the caller finds it by scanning the range again. A person's own window still opens one:
      * making a window does not touch the projects of the window that made it.
      */
-    function openWindow(sb) {
+    async function openWindow(sb) {
         const s = session(sb);
         const item = (typeof BarItems !== 'undefined' && BarItems && BarItems.new_window) || null;
         if (!item || (typeof item.click !== 'function' && typeof item.trigger !== 'function')) {
             return Object.assign({ ok: false, error: 'this Blockbench has no new_window action (not the desktop app?)',
                 hint: 'open a window by hand (Window > New Window) and it will take the next free port' }, windowBlock());
         }
+        // REUSE, THEN A CEILING, THEN A WINDOW - and all three here rather than in the shim, because
+        // this route is what a shim from before the toolkit stopped demanding windows calls, on a
+        // poll, forever (section 12.2). A fix in the shim cannot reach those: the shim is a copy
+        // extracted into each consumer repo, and a session that started days ago is still running
+        // the copy it started with. The plugin is the one part of this that everybody's next
+        // Blockbench restart updates, so the plugin is where the ceiling has to be.
+        const found = await scanRange();
+        // 1. One this session already holds. A rejoin, not a second window - the same answer
+        //    `dockAllocate` gives, so the two front doors cannot disagree about what a session has.
+        // These three answers do NOT carry the window block, and that is deliberate: the block
+        // describes THIS window, and `port` in it would then mean something different from the
+        // `port` an answer about ANOTHER window is for. `POST /dock/window` answers a bare port for
+        // the same reason. (The `opened` path below still carries it, unchanged, because there the
+        // block is about the window that was asked and there is no other port in the reply.)
+        const mine = found.find((w) => w.hello.claimed_by && w.hello.claimed_by.session === s.id);
+        if (mine) return { ok: true, reused: true, rejoined: true, port: mine.port, window: mine.hello.window };
+        // 1b. ONE THIS SESSION HAS ALREADY ASKED FOR. Seen live 2026-09-12: one stale shim held
+        //     THREE windows, because it asked three times inside its own poll cadence and each ask
+        //     ran in the gap where the previous window had consumed its handoff and was not yet
+        //     answering on a port. `ok:true` with no port is what a shim reads as "wait and look",
+        //     which is what it does anyway - so the second ask costs nothing and makes nothing.
+        const already = readAsked().find((e) => e.session === s.id);
+        if (already) {
+            return { ok: true, opening: true, requested_by: s.id, autostart: !!settings.autostart,
+                asked_s_ago: Math.round((now() - already.at) / 1000) };
+        }
+        // 2. An empty agent window standing free, handed over rather than duplicated. `POST /role`
+        //    is how, because a plugin cannot reach into another window: the target pre-claims
+        //    ITSELF for the asker, and the asker's next scan finds a window already its own.
+        for (const w of found) {
+            if (w.hello.role !== 'agent' || heldHello(w.hello) || (w.hello.open || []).length) continue;
+            try {
+                const r = await reach(w.port, '/role', { role: 'agent', claim_for: s.id });
+                if (r.status === 200 && r.body && r.body.ok) {
+                    return { ok: true, reused: true, port: w.port, window: w.hello.window,
+                        claim_for: s.id, autostart: !!settings.autostart };
+                }
+            } catch (e) { /* it went away between the scan and now; try the next */ }
+        }
+        // 3. The ceiling. A person's windows are not counted and never refused; this counts only
+        //    windows opened FOR agents, this one included when it is one.
+        //
+        //    AND THE WINDOWS NOBODY CAN SEE YET, which is what the live run of 2026-09-12 found:
+        //    six windows got past a ceiling of three, because several stale shims asked within the
+        //    same second and a window that has been ASKED for takes ~2s to exist. A scan cannot see
+        //    it, so the ask itself has to be counted - and the pending handoffs are the one count
+        //    that is SHARED between windows (localStorage, design section 5), which is what makes
+        //    this hold when the asks arrive at different windows rather than at one.
+        const agentPorts = found.filter((w) => w.hello.role === 'agent').map((w) => w.port).concat(agentBorn ? [boundPort] : []);
+        const pending = readAsked().filter((e) => !found.some((w) => w.hello.claimed_by && w.hello.claimed_by.session === e.session)).length;
+        if (agentPorts.length + pending >= maxAgentWindows()) {
+            return { ok: false, opened: false,
+                error: 'this Blockbench already has ' + agentPorts.length + ' agent window(s) (' + agentPorts.join(', ')
+                    + ')' + (pending ? ' and ' + pending + ' asked for' : '') + ' and its limit is ' + maxAgentWindows(),
+                hint: 'work in one of those (they are yours to claim when their session goes idle), or raise the limit in '
+                    + 'Tools > MCP Toolkit Bridge > Settings',
+                agent_windows: agentPorts, max_agent_windows: maxAgentWindows() };
+        }
         pushPending(s.id);
+        noteAsked(s.id);
         try {
             if (typeof item.click === 'function') item.click();
             else item.trigger();
         } catch (e) {
             // No window is coming, so the identity left for it must not sit there waiting to be taken
-            // by the next window a person opens by hand.
+            // by the next window a person opens by hand - nor the ask stand in the way of the next one.
             dropPending(s.id);
+            dropAsked(s.id);
             return Object.assign({ ok: false, error: 'new_window refused: ' + String(e && e.message || e) }, windowBlock());
         }
         // `autostart` is shared settings: a window that will not start its bridge is a window the
@@ -629,7 +946,29 @@
         session({ id: String(id) });
         claimedBy = String(id);
         claimedAt = now();
+        claimUsedAt = 0;
     }
+    /**
+     * Every OTHER window in the range that answers, lowest port first. This is the whole census a
+     * renderer can take: the sandbox has no `electron`, so there is no window list to ask and no
+     * handle to hold (section 11.4) - a port that answers `/hello` is a window, and one that does
+     * not is not there as far as anything here can tell.
+     */
+    async function scanRange() {
+        const base = scanBase();
+        const span = base === 0 ? 1 : PORT_SPAN;
+        const out = [];
+        for (let p = base; p < base + span; p++) {
+            if (p === boundPort) continue;
+            try {
+                const r = await reach(p, '/hello');
+                if (r.status === 200 && r.body && r.body.app === 'blockbench') out.push({ port: p, hello: r.body });
+            } catch (e) { /* nothing there */ }
+        }
+        return out;
+    }
+    /** Is another window's `/hello` one somebody is actually working in? An idle claim is not. */
+    function heldHello(h) { return !!(h && h.claimed_by && !h.claimed_by.idle); }
     /** One request to another window on this machine. Localhost answers at once or is not there. */
     async function reach(port, path, body) {
         if (typeof fetch !== 'function') throw new Error('no fetch in this renderer');
@@ -660,7 +999,7 @@
             startSweep();
         } else if (ans.role === 'person') {
             agentBorn = false;
-            claimedBy = null;
+            dropClaim('taken back from the MCP Dock');
             freeSince = null;
             stopSweep();
         }
@@ -675,7 +1014,7 @@
     async function findDock() {
         if (isDock || !boundPort) return null;
         const hint = isNumLike(settings.dock_port) ? settings.dock_port : null;
-        const base = isNumLike(settings.port) ? settings.port : DEFAULT_PORT;
+        const base = scanBase();
         const span = base === 0 ? 1 : PORT_SPAN;
         const order = [];
         if (hint !== null && hint !== boundPort) order.push(hint);
@@ -769,7 +1108,7 @@
             if (body.claim_for) preClaim(body.claim_for);
             startSweep();
         } else {
-            claimedBy = null;
+            dropClaim('taken back from the MCP Dock');
             stopSweep();
         }
         armEmptyCheck();
@@ -795,18 +1134,37 @@
     function rowState(r) {
         const quiet = now() - r.beat_at;
         if (!r.serving) return now() - Math.max(r.beat_at, r.seen_at) <= 3 * beatStaleMs() ? 'ghost' : 'gone';
+        // THE BEAT CLOCK OUTRANKS A STALE `serving` (section 12.7). `serving` is the SCAN's field,
+        // and a dock in the background may not have scanned for minutes, so a window that has gone
+        // would otherwise sit in the roster answering "silent" for as long as a person looks at it.
+        // A window that has ever beaten and then said nothing for three staleness windows is gone,
+        // whatever the last scan believed; the scan is what can tell wedged from gone, when it runs.
+        if (r.beat_at && quiet > 3 * beatStaleMs()) return 'gone';
         if (!r.beat_at || quiet > beatStaleMs()) return 'silent';
-        if (r.role === 'agent' && !r.claimed_by && !(r.open || []).length) return 'orphan';
+        // An IDLE claim on an empty window reads as orphan here too (section 12.3). The window
+        // itself drops such a claim and then beats `claimed_by: null`, so this is the belt to that
+        // brace - and the only thing that makes it matter is the gap between the two beats.
+        const held = r.claimed_by && !r.claimed_by.idle;
+        if (r.role === 'agent' && !held && !(r.open || []).length) return 'orphan';
         return 'live';
     }
+    /**
+     * A row nobody has heard from in three staleness windows is not listed - and the FILTER is what
+     * makes the roster true, not the delete in `dockScan` (section 12.7). The dock's timers are
+     * frozen whenever its window has been in the background for five minutes, so a picture that is
+     * only correct after the next scan is a picture that stays wrong for as long as a person is
+     * looking at it. What keeps the roster current is the BEATS, which arrive as HTTP requests and
+     * are throttled by nothing; the scan is housekeeping on top.
+     */
     function rosterRows() {
-        return Object.keys(roster).map(Number).sort((a, b) => a - b).map((p) => {
+        return Object.keys(roster).map(Number).sort((a, b) => a - b).filter((p) => rowState(roster[p]) !== 'gone').map((p) => {
             const r = roster[p];
             return {
                 port: p, window: r.window, role: r.role, state: rowState(r),
                 held_by: r.claimed_by || null,
                 open: r.open || [], dirty: r.dirty || 0,
                 last_call: r.last_call || null,
+                queue: r.queue || null,
                 beat_s_ago: r.beat_at ? Math.round((now() - r.beat_at) / 1000) : null,
                 serving: !!r.serving,
             };
@@ -845,7 +1203,7 @@
         } else {
             row.role = 'person';
         }
-        paintDock();
+        repaintDock();
         return { ok: true, role: row.role, claim_for: claimFor, dock: { window: WINDOW_ID, port: boundPort } };
     }
     /** POST /dock/beat. The answer carries the role, so a re-labelling reaches a window on its next beat. */
@@ -861,10 +1219,15 @@
         row.open = Array.isArray(body.open) ? body.open : [];
         row.dirty = body.dirty || 0;
         row.last_call = body.last_call || null;
+        row.queue = body.queue || null;
         // The dock's word on the role wins, EXCEPT that it believes a window claiming to be agent-born
         // when it has no opinion of its own - the roster is rebuilt from nothing when a dock opens.
         if (!row.role || (row.role === 'person' && body.role === 'agent' && !row.assigned)) row.role = body.role || 'person';
-        paintDock();
+        // Housekeeping on the one clock that is not throttled: an incoming beat (section 12.7). A
+        // dock in the background can go minutes without a scan, so the rows of windows that have
+        // gone are dropped here too rather than only there.
+        pruneRoster();
+        repaintDock();
         return { ok: true, role: row.role };
     }
     /** The Blockbench action that makes a window, or null where there is none (the web build). */
@@ -904,12 +1267,28 @@
                 const r = await reach(row.port, '/role', { role: 'agent', claim_for: sid });
                 if (r.status === 200 && r.body && r.body.ok) {
                     row.claimed_by = { session: sid, client: null, connected: false, seen_s_ago: 0 };
-                    paintDock();
+                    repaintDock();
                     return { ok: true, port: row.port, window: row.window, reused: true };
                 }
             } catch (e) { /* it went away between the scan and now; try the next */ }
         }
-        // 3. Make one.
+        // 3. The ceiling, which the dock can enforce better than a window can because it is the one
+        //    place that knows how many there are without scanning for them (section 12.4).
+        // Only windows that SERVE count (found live 2026-09-13): a window closed by hand, or by a
+        // `POST /close` that did not go through the dock, sits in the roster as a ghost for three
+        // staleness windows, and three ghosts refused every session a window for seven minutes
+        // after the windows were gone. A window mid-birth is not serving either, and is counted
+        // through `births` below.
+        const agentPorts = Object.values(roster).filter((r) => r.role === 'agent' && r.serving && rowState(r) !== 'gone').map((r) => r.port);
+        if (agentPorts.length + births.length >= maxAgentWindows()) {
+            return { ok: false, error: 'this Blockbench already has ' + agentPorts.length + ' agent window(s) ('
+                    + agentPorts.join(', ') + ')' + (births.length ? ' and ' + births.length + ' asked for' : '')
+                    + ' and its limit is ' + maxAgentWindows(),
+                hint: 'the dock hands an empty one over as soon as its session goes idle; the limit is in '
+                    + 'Tools > MCP Toolkit Bridge > Settings',
+                agent_windows: agentPorts, max_agent_windows: maxAgentWindows() };
+        }
+        // 4. Make one.
         const item = newWindowAction();
         if (!item) {
             return { ok: false, error: 'this Blockbench has no new_window action (not the desktop app?)',
@@ -929,7 +1308,7 @@
         }
         const row = rosterRow(port);
         row.claimed_by = { session: sid, client: null, connected: false, seen_s_ago: 0 };
-        paintDock();
+        repaintDock();
         return { ok: true, port: port, window: row.window, made: true };
     }
     /**
@@ -963,7 +1342,7 @@
                 hint: 'reload the bridge plugin in that window, or close it by hand; a restart of Blockbench brings every window up on the new one' };
         }
         if (r.status !== 200 || !r.body) return { ok: false, error: 'port ' + port + ' answered HTTP ' + r.status };
-        if (r.body.ok) { delete roster[port]; paintDock(); }
+        if (r.body.ok) { delete roster[port]; repaintDock(); }
         return r.body;
     }
     /**
@@ -972,7 +1351,7 @@
      */
     async function dockScan() {
         if (!isDock || !server) return;
-        const base = isNumLike(settings.port) ? settings.port : DEFAULT_PORT;
+        const base = scanBase();
         const span = base === 0 ? 1 : PORT_SPAN;
         const seen = {};
         const ports = [];
@@ -997,16 +1376,18 @@
             if (Array.isArray(h.open)) row.open = h.open;
             if (isNum(h.dirty)) row.dirty = h.dirty;
             if (h.last_call !== undefined) row.last_call = h.last_call;
+            if (h.queue !== undefined) row.queue = h.queue;
             // A window from before 0.8.0 never beats. Believe its own `role`/`agent` so it still shows
             // up truthfully as SILENT rather than as a mystery.
             if (!row.beat_at) row.role = h.role || (h.agent ? 'agent' : 'person');
         }
-        for (const p of Object.keys(roster).map(Number)) {
-            if (!(p in seen)) roster[p].serving = false;
-            const r = roster[p];
-            if (!r.serving && now() - Math.max(r.beat_at, r.seen_at) > 3 * beatStaleMs()) delete roster[p];
-        }
-        paintDock();
+        for (const p of Object.keys(roster).map(Number)) if (!(p in seen)) roster[p].serving = false;
+        pruneRoster();
+        repaintDock();
+    }
+    /** Forget the rows `rosterRows` would not list anyway. Safe to call from anywhere, any clock. */
+    function pruneRoster() {
+        for (const p of Object.keys(roster).map(Number)) if (rowState(roster[p]) === 'gone') delete roster[p];
     }
     function startDockScan() {
         if (dockScanTimer || !isDock) return;
@@ -1044,16 +1425,8 @@
     }
     /** The port a dock answers on, or null. One scan of the range, used before making another dock. */
     async function whereIsDock() {
-        const base = isNumLike(settings.port) ? settings.port : DEFAULT_PORT;
-        const span = base === 0 ? 1 : PORT_SPAN;
-        for (let p = base; p < base + span; p++) {
-            if (p === boundPort) continue;
-            try {
-                const r = await reach(p, '/hello');
-                if (r.status === 200 && r.body && r.body.app === 'blockbench' && r.body.role === 'dock') return p;
-            } catch (e) { /* nothing there */ }
-        }
-        return null;
+        const w = (await scanRange()).find((x) => x.hello.role === 'dock');
+        return w ? w.port : null;
     }
     /**
      * Become the dock. Deliberately not reachable over HTTP: a dock is opened by a person from the
@@ -1063,7 +1436,7 @@
     function becomeDock() {
         isDock = true;
         agentBorn = false;
-        claimedBy = null;
+        dropClaim('this window became the MCP Dock');
         allowAgents = false;
         freeSince = null;
         stopSweep();
@@ -1074,6 +1447,20 @@
         startDockScan();
         refreshIdentity();
         return windowBlock();
+    }
+    /**
+     * "Make this window the MCP Dock", with the one check "Open the MCP Dock" already made: there is
+     * ONE dock by design, and until 0.11.0 this entry skipped the check, so the lowest-port rule
+     * then quietly overruled the window the person had just chosen (section 13).
+     */
+    async function makeDock() {
+        if (isDock) return { ok: false, error: 'this window already is the MCP Dock' };
+        if (!boundPort) return { ok: false, error: 'start the bridge in this window first' };
+        const there = await whereIsDock();
+        if (there !== null) {
+            return { ok: false, error: 'the MCP Dock is already open, on port ' + there + ' - there is one by design; stop the bridge there first, or use that one', dock_port: there };
+        }
+        return Object.assign({ ok: true }, becomeDock());
     }
     /** Open a window and tell it to be the dock. Called from the menu, in any window. */
     async function openDock() {
@@ -1113,7 +1500,7 @@
             dockBody.style.cssText = 'padding:6px 8px;font-size:11px;line-height:1.5;overflow:auto';
             dockPanel.node.append(dockBody);
         } catch (e) { dockPanel = null; dockBody = null; return; }
-        paintDock();
+        repaintDock();
     }
     function removeDockPanel() {
         if (dockPanel) { try { dockPanel.delete(); } catch (e) { /* gone */ } }
@@ -1154,25 +1541,16 @@
             box.append(el('div', r.last_call
                 ? 'last call ' + r.last_call.name + ' ' + r.last_call.s_ago + 's ago' + (r.last_call.session ? ' by ' + r.last_call.session : '')
                 : 'no calls', 'opacity:0.6'));
+            // One list of what can be done to a row, shared with the start screen (section 12.1):
+            // two implementations of "what can I do about this window" is how the two surfaces
+            // would come to offer different things.
             const bar = el('div', undefined, 'display:flex;gap:4px;margin-top:3px;flex-wrap:wrap');
-            const button = (label, fn) => {
+            for (const item of rowActions(r)) {
                 const b = document.createElement('button');
-                b.textContent = label;
+                b.textContent = item.label;
                 b.style.cssText = 'font-size:10px;padding:1px 6px';
-                b.addEventListener('click', () => { Promise.resolve(fn()).catch((e) => Blockbench.showQuickMessage(String(e && e.message || e), 3000)); });
+                b.addEventListener('click', () => { pressItem(item).catch((e) => Blockbench.showQuickMessage(String(e && e.message || e), 3000)); });
                 bar.append(b);
-            };
-            if (r.serving) {
-                button('Focus', () => reach(r.port, '/focus', {}));
-                button(r.role === 'agent' ? 'Release' : 'Adopt', async () => {
-                    const res = await reach(r.port, '/role', { role: r.role === 'agent' ? 'person' : 'agent' });
-                    if (res.body && res.body.ok) { rosterRow(r.port).role = r.role === 'agent' ? 'person' : 'agent'; paintDock(); }
-                    else Blockbench.showQuickMessage((res.body && res.body.error) || 'refused', 3000);
-                });
-                button(r.dirty ? 'Close (discard)' : 'Close', async () => {
-                    const res = await dockClose({ port: r.port, force: !!r.dirty });
-                    if (!res.ok) Blockbench.showQuickMessage(res.error, 4000);
-                });
             }
             box.append(bar);
             dockBody.append(box);
@@ -1204,7 +1582,7 @@
     let closing = false;
     function armEmptyCheck() {
         if (!agentBorn) return;
-        if (claimHolder() || projects().length) { freeSince = null; return; }
+        if (projects().length || (claimHolder() && !claimIdle())) { freeSince = null; return; }
         if (freeSince === null) freeSince = now();
         startSweep();
     }
@@ -1220,7 +1598,12 @@
         // would be acting on a picture we can no longer see.
         if (closing || !agentBorn || !server) return null;
         releaseDeadClaim();
-        if (claimHolder() || projects().length) { freeSince = null; return null; }
+        // A PROJECT always stays the window's reason to live, whoever holds it and however long
+        // ago. Only an empty window is ever judged by its claim, and there an IDLE claim is not a
+        // reason to stay open (section 12.3): `releaseDeadClaim` above has already dropped it, and
+        // this is the same reading from the other side for the case where something re-made it.
+        if (projects().length) { freeSince = null; return null; }
+        if (claimHolder() && !claimIdle()) { freeSince = null; return null; }
         if (freeSince === null) { freeSince = now(); return null; }
         if (now() - freeSince < emptyMs()) return null;
         if (!(await otherWindowsAnswer())) return null;
@@ -1234,7 +1617,7 @@
      */
     async function otherWindowsAnswer() {
         if (typeof fetch !== 'function') return false;
-        const base = isNumLike(settings.port) ? settings.port : DEFAULT_PORT;
+        const base = scanBase();
         const span = base === 0 ? 1 : PORT_SPAN;
         for (let p = base; p < base + span; p++) {
             if (p === boundPort) continue;
@@ -1277,9 +1660,12 @@
      * focusing it, and the PANEL says what that session is doing in it right now.
      */
     const recent = [];
-    function noteCall(name, ok, ms, sess) {
-        recent.push({ at: now(), name: name, ok: ok, ms: ms, session: (sess && sess.id) || null });
+    function noteCall(name, ok, ms, sess, note) {
+        recent.push({ at: now(), name: name, ok: ok, ms: ms, session: (sess && sess.id) || null, note: note || null });
         while (recent.length > RECENT_MAX) recent.shift();
+        // The claim's own clock (section 12.3). A call is the only thing that counts as using a
+        // window, which is what separates a session working here from a process that merely exists.
+        if (sess && claimedBy && sess.id === claimedBy) claimUsedAt = now();
         paintPanel();
     }
     let titleObserver = null;
@@ -1383,12 +1769,345 @@
         };
         for (const l of lines) line(l);
         line(recent.length ? 'recent calls' : 'no calls yet', true);
+        const q = queueBlock();
+        if (q.running) line('running ' + q.running.name + ' for ' + q.running.s + 's' + (q.waiting ? ', ' + q.waiting + ' waiting' : ''), true);
         for (let i = recent.length - 1; i >= 0; i--) {
             const r = recent[i];
-            line((r.ok ? '' : '! ') + r.name + '  ' + r.ms + 'ms', !r.ok);
+            line((r.ok ? '' : '! ') + r.name + '  ' + r.ms + 'ms' + (r.note ? '  ' + r.note : ''), !r.ok);
         }
     }
-    function refreshIdentity() { applyTitle(); paintPanel(); }
+    // ------------------------------------------------------------- the start screen
+    /**
+     * WHAT A WINDOW WITH NO PROJECT CAN SHOW A PERSON - which until 0.10.0 was nothing at all, and
+     * is why a person with eight bridge windows open had no way to tell them apart or close them
+     * (BLOCKBENCH_ISOLATION_DESIGN.md section 12.1).
+     *
+     * MEASURED IN THE RUNNING APP, 2026-09-12, both ways in one call: with a project open the dock's
+     * panel is 544x93 and connected; with none it is 0x0 and `#start_screen` is `display: block`
+     * over the whole workspace. Blockbench hides the sidebars behind the start screen, so a PANEL is
+     * invisible in exactly the state the dock is DESIGNED to sit in - no project, ever - and an
+     * empty agent window sits in it too. The dock had been running and scanning for hours, with a
+     * complete roster on `GET /dock`, and the person could not see one row of it.
+     *
+     * `addStartScreenSection(id, data)` is the surface that IS visible there: a global in Blockbench
+     * 5.1.6 (`Object.assign(window, {StartScreen, addStartScreenSection})`), returning a handle with
+     * `delete()`, inserting at the top of `#start_screen > content` by default. The spike that
+     * settled it rendered 1000x211 with no project open, topmost and hit-testable by
+     * `elementFromPoint`.
+     *
+     * TWO RULES HERE. The MODEL is separate from the painting and every button carries a function
+     * rather than an id, so the whole of what a person is shown and can press is assertable
+     * headlessly. And nothing that came off the wire goes in as markup: `addStartScreenSection`
+     * passes its `text` through `pureMarked`, so it is given only static strings and every dynamic
+     * value - window ids, session ids, client names, project names - is appended as `textContent`,
+     * the same discipline the panels already keep.
+     */
+    /** This window as a roster row, so the dock's rows and a window's own row are one shape. */
+    function windowRow() {
+        const h = claimHolder();
+        const idle = claimIdleMs();
+        return Object.assign({
+            port: boundPort, window: WINDOW_ID, role: role(), self: true, serving: !!server,
+            state: !server ? 'stopped' : isDock ? 'dock'
+                : agentBorn && (!h || claimIdle()) && !projects().length ? 'orphan' : 'live',
+            held_by: h ? Object.assign(holderBlock(h), { idle_s: Math.round((idle || 0) / 1000), idle: claimIdle() }) : null,
+        }, stateBlock());
+    }
+    /**
+     * What can be done TO another window, which is one list used by both surfaces - the dock's panel
+     * and the dock's start screen - because "what can I do about this row" is one question and two
+     * answers to it is how they drift apart.
+     */
+    function rowActions(r) {
+        if (!r.serving) return [];
+        // THE VERBS SAY WHAT THEY DO (section 13). "Adopt" sat on a person's live window with work
+        // in it and did not say that it makes that window claimable; "Release" did not say that it
+        // takes the window away from the session in it. A row with a project open asks once
+        // (`confirm` is the sentence the painter puts to the person; null means act at once).
+        const open = (r.open || []).length;
+        const out = [{
+            label: 'Focus', act: () => reach(r.port, '/focus', {}),
+        }, {
+            label: r.role === 'agent' ? 'Take back' : 'Give to agents',
+            confirm: r.role !== 'agent' && open
+                ? 'Port ' + r.port + ' has ' + open + ' project' + (open === 1 ? '' : 's') + ' open ('
+                    + (r.open || []).map((p) => p.name).join(', ') + '). Giving it to agents lets a session claim it and switch its active tab to their own work. Give it anyway?'
+                : (r.role === 'agent' && r.held_by
+                    ? 'Port ' + r.port + ' is held by session ' + r.held_by.session + (r.held_by.client ? ' (' + r.held_by.client + ')' : '')
+                        + '. Taking it back tells that session it lost this window; its next call gets another. Take it back?'
+                    : null),
+            act: async () => {
+                const want = r.role === 'agent' ? 'person' : 'agent';
+                const res = await reach(r.port, '/role', { role: want });
+                if (res.body && res.body.ok) { rosterRow(r.port).role = want; repaintDock(); }
+                else Blockbench.showQuickMessage((res.body && res.body.error) || 'refused', 3000);
+            },
+        }];
+        if (!r.self) {
+            out.push({
+                label: r.dirty ? 'Close (discard)' : 'Close',
+                act: async () => {
+                    const res = await dockClose({ port: r.port, force: !!r.dirty });
+                    if (!res.ok) Blockbench.showQuickMessage(res.error, 4000);
+                },
+            });
+        }
+        return out;
+    }
+    /**
+     * Press a button from either surface. An item with `confirm` is put to the person first, through
+     * Blockbench's own message box; one that has none runs at once. The model carries the sentence
+     * rather than the painter deciding, so a harness can read which rows ask without a DOM.
+     */
+    function pressItem(item) {
+        const run = () => Promise.resolve(item.act());
+        if (!item.confirm || typeof Blockbench === 'undefined' || typeof Blockbench.showMessageBox !== 'function') return run();
+        return new Promise((resolve) => {
+            let asked = false;
+            try {
+                asked = true;
+                Blockbench.showMessageBox({ title: 'MCP Dock', message: item.confirm, buttons: [item.label, 'Cancel'], confirm: 0, cancel: 1 },
+                    (i) => { if (i === 0) run().then(resolve, resolve); else resolve(undefined); });
+            } catch (e) { asked = false; }
+            if (!asked) run().then(resolve, resolve);
+        });
+    }
+    /** What can be done to THIS window, from inside it. */
+    function selfActions() {
+        const out = [];
+        if (!server) {
+            out.push({ label: 'Start the bridge', act: () => { start({ prompt: true }); refreshIdentity(); } });
+            return out;
+        }
+        if (isDock) {
+            out.push({ label: 'Rescan now', act: () => dockScan() });
+        } else {
+            const dp = isNumLike(settings.dock_port) ? settings.dock_port : null;
+            out.push(dp && dp !== boundPort
+                ? { label: 'Show the MCP Dock', act: () => reach(dp, '/focus', {}) }
+                : {
+                    label: 'Open the MCP Dock',
+                    act: async () => {
+                        const res = await openDock();
+                        if (!res.ok) Blockbench.showQuickMessage(res.error, 4000);
+                    },
+                });
+            const dirty = projects().filter((p) => !p.saved).length;
+            out.push({
+                label: dirty ? 'Close this window (discard ' + dirty + ')' : 'Close this window',
+                act: () => {
+                    const res = closeSelf(!!dirty);
+                    if (!res.ok) Blockbench.showQuickMessage(res.error, 4000);
+                },
+            });
+        }
+        return out;
+    }
+    /**
+     * Everything the start screen says, as data. The dock lists the range; an ordinary window says
+     * which one it is and offers the two acts a person standing in front of a blank window wants:
+     * find the dock, or close this.
+     */
+    function startScreenModel() {
+        const self = windowRow();
+        const rows = isDock ? [self].concat(rosterRows()) : [self];
+        const model = {
+            id: PLUGIN_ID,
+            heading: isDock ? 'MCP Dock' : 'MCP Toolkit Bridge',
+            note: !server ? 'the bridge is not listening in this window'
+                : isDock ? 'this window governs the others: it is never claimed by a session and never closes itself'
+                    : agentBorn ? 'this window was opened for an agent session'
+                        : allowAgents ? 'your window, handed to agent sessions'
+                            : 'your window - agent sessions are given their own',
+            rows: rows.map((r) => ({
+                port: r.port,
+                self: !!r.self,
+                // The state is DATA and not only a word inside `head`: a caller reading this model
+                // (the harness, a person at `risky_eval`) must be able to ask which rows are
+                // orphans without parsing the sentence made for a person to read.
+                state: r.state,
+                role: r.role,
+                head: (r.self ? 'this window' : 'port ' + r.port) + '   ' + r.role + '   ' + r.state,
+                lines: [
+                    (r.self ? 'port ' + (r.port || '-') + '   ' : '') + (r.window || ''),
+                    'held by ' + (r.held_by
+                        ? r.held_by.session + (r.held_by.client ? ' (' + r.held_by.client + ')' : '')
+                        + (r.held_by.connected ? ', connected' : ', seen ' + r.held_by.seen_s_ago + 's ago')
+                        + (r.held_by.idle ? ', idle ' + r.held_by.idle_s + 's - this window is free to recycle' : '')
+                        : 'nobody'),
+                    'open: ' + (r.open && r.open.length ? r.open.map((p) => p.name + (p.saved ? '' : ' *')).join(', ') : 'nothing'),
+                    r.last_call ? 'last call ' + r.last_call.name + ' ' + r.last_call.s_ago + 's ago' : 'no calls',
+                ].concat(r.queue && r.queue.running
+                    ? ['running ' + r.queue.running.name + ' for ' + r.queue.running.s + 's' + (r.queue.running.session ? ' (session ' + r.queue.running.session + ')' : '')
+                        + (r.queue.waiting ? ', ' + r.queue.waiting + ' waiting' : '')]
+                    : []),
+                note: r.self ? null : (STATE_NOTE[r.state] || null),
+                buttons: r.self ? selfActions() : rowActions(r),
+            })),
+            buttons: [],
+        };
+        if (isDock) {
+            const empties = rosterRows().filter((r) => r.state === 'orphan');
+            if (empties.length > 1) {
+                model.buttons.push({
+                    label: 'Close all ' + empties.length + ' empty agent windows',
+                    act: async () => { for (const r of empties) await dockClose({ port: r.port }); },
+                });
+            }
+        }
+        return model;
+    }
+    let startSection = null;
+    let startBody = null;
+    let startHead = null;
+    function makeStartScreen() {
+        if (startSection) return startSection;
+        if (typeof addStartScreenSection !== 'function' || typeof document === 'undefined' || !document.querySelector) return null;
+        try {
+            // Static text only, because this is the half that goes through `pureMarked`. The
+            // heading it makes is then WRITTEN to as `textContent` from here on (a window becomes
+            // the dock long after this runs), which is also why the body below does not repeat it.
+            startSection = addStartScreenSection(PLUGIN_ID, {
+                color: 'var(--color-back)',
+                graphic: { type: 'icon', icon: 'hub' },
+                text: [{ type: 'h3', text: 'MCP Toolkit Bridge' }],
+            });
+            const node = document.querySelector('#start_screen > content .start_screen_section[section_id="' + PLUGIN_ID + '"]');
+            const right = node && node.querySelector('.start_screen_right');
+            if (!right) { removeStartScreen(); return null; }
+            startHead = right.querySelector('h3');
+            startBody = document.createElement('div');
+            startBody.style.cssText = 'font-size:12px;line-height:1.5';
+            right.append(startBody);
+        } catch (e) { startSection = null; startBody = null; startHead = null; return null; }
+        paintStartScreen();
+        return startSection;
+    }
+    function removeStartScreen() {
+        if (startSection && typeof startSection.delete === 'function') { try { startSection.delete(); } catch (e) { /* gone */ } }
+        startSection = null;
+        startBody = null;
+        startHead = null;
+    }
+    function paintStartScreen() {
+        if (!startBody) return;
+        // The person may have closed a project, which is when Blockbench shows the start screen
+        // again - the section is the same DOM either way, so there is nothing to re-insert; but a
+        // node that HAS gone (a plugin reload, a Blockbench that rebuilt the screen) is rebuilt
+        // rather than painted into nothing.
+        if (!startBody.isConnected) { removeStartScreen(); makeStartScreen(); return; }
+        const m = startScreenModel();
+        startBody.textContent = '';
+        const el = (tag, text, css) => {
+            const d = document.createElement(tag);
+            if (text !== undefined) d.textContent = text;
+            if (css) d.style.cssText = css;
+            return d;
+        };
+        if (startHead) {
+            startHead.textContent = m.heading + (m.rows.length > 1
+                ? '  -  ' + (m.rows.length - 1) + ' other window' + (m.rows.length === 2 ? '' : 's') : '');
+        }
+        startBody.append(el('div', m.note, 'opacity:0.65;margin-bottom:4px'));
+        const bar = (buttons, css) => {
+            if (!buttons.length) return null;
+            const b = el('div', undefined, 'display:flex;gap:4px;flex-wrap:wrap;margin-top:3px' + (css || ''));
+            for (const item of buttons) {
+                const btn = el('button', item.label, 'font-size:11px;padding:2px 8px');
+                btn.addEventListener('click', () => {
+                    pressItem(item).then(() => paintStartScreen())
+                        .catch((e) => Blockbench.showQuickMessage(String(e && e.message || e), 3000));
+                });
+                b.append(btn);
+            }
+            return b;
+        };
+        for (const r of m.rows) {
+            const box = el('div', undefined, 'border-top:1px solid var(--color-border);padding:4px 0');
+            box.append(el('div', r.head, 'font-weight:600'));
+            for (const line of r.lines) box.append(el('div', line, 'opacity:0.75'));
+            if (r.note) box.append(el('div', r.note, 'opacity:0.6'));
+            const b = bar(r.buttons);
+            if (b) box.append(b);
+            startBody.append(box);
+        }
+        const foot = bar(m.buttons, ';margin-top:6px');
+        if (foot) startBody.append(foot);
+    }
+    /** The dock's two surfaces repaint together: the panel when a project is open, the start screen when not. */
+    function repaintDock() { paintDock(); paintStartScreen(); }
+    function refreshIdentity() { applyTitle(); paintPanel(); paintStartScreen(); refreshMenu(); }
+
+    // ------------------------------------------------------------- the status dialog
+    /**
+     * Status... was a JSON dump (section 13). It is now the same rows as the start screen - one
+     * model, painted a second way, so the two cannot disagree - plus the sessions this window knows
+     * and the queue, with the raw JSON behind one button. As data, like the start screen, for the
+     * same reason.
+     */
+    function statusModel() {
+        const screen = startScreenModel();
+        return {
+            heading: screen.heading,
+            note: screen.note,
+            rows: screen.rows,
+            queue: queueBlock(),
+            sessions: Object.keys(sessions).map((id) => ({
+                id: id, client: sessions[id].client || null,
+                project: (projects().find((p) => p.uuid === sessions[id].project) || {}).name || null,
+                connections: sessions[id].connections.size, seen_s_ago: Math.round((now() - sessions[id].seen) / 1000),
+                alive: alive(sessions[id]),
+            })),
+            recent: recent.slice().reverse(),
+            raw: status(),
+        };
+    }
+    function openStatusDialog() {
+        if (typeof Dialog !== 'function' || typeof document === 'undefined' || !document.createElement) return statusModel();
+        const rootId = PLUGIN_ID + '_status_root';
+        const dlg = new Dialog({
+            id: PLUGIN_ID + '_status', title: 'MCP Toolkit Bridge', width: 620,
+            lines: ['<div id="' + rootId + '"></div>'],
+            buttons: ['Close'], singleButton: true,
+        });
+        dlg.show();
+        // The dialog's DOM exists only after show(); everything is real nodes and `textContent`,
+        // because window ids, session ids, client names and project names are strings somebody
+        // else chose (the same rule every surface here keeps).
+        setTimeout(() => {
+            const root = document.getElementById && document.getElementById(rootId);
+            if (!root) return;
+            const m = statusModel();
+            const el = (tag, text, css) => { const d = document.createElement(tag); if (text !== undefined) d.textContent = text; if (css) d.style.cssText = css; return d; };
+            root.style.cssText = 'font-size:12px;line-height:1.5';
+            root.append(el('div', m.heading, 'font-weight:600'));
+            root.append(el('div', m.note, 'opacity:0.65;margin-bottom:4px'));
+            for (const r of m.rows) {
+                const box = el('div', undefined, 'border-top:1px solid var(--color-border);padding:4px 0');
+                box.append(el('div', r.head, 'font-weight:600'));
+                for (const line of r.lines) box.append(el('div', line, 'opacity:0.75'));
+                if (r.note) box.append(el('div', r.note, 'opacity:0.6'));
+                root.append(box);
+            }
+            const q = m.queue;
+            root.append(el('div', q.running ? 'running ' + q.running.name + ' for ' + q.running.s + 's' + (q.waiting ? ', ' + q.waiting + ' waiting' : '') : 'nothing running', 'margin-top:4px;opacity:0.75'));
+            root.append(el('div', m.sessions.length ? 'sessions this window knows' : 'no sessions', 'margin-top:6px;font-weight:600'));
+            for (const s of m.sessions) {
+                root.append(el('div', s.id + (s.client ? ' (' + s.client + ')' : '') + '  ' + (s.connections ? s.connections + ' connection' + (s.connections === 1 ? '' : 's') : 'seen ' + s.seen_s_ago + 's ago')
+                    + (s.project ? '  project ' + s.project : '') + (s.alive ? '' : '  (gone)'), 'opacity:0.75'));
+            }
+            const btn = el('button', 'Raw JSON', 'margin-top:8px;font-size:11px;padding:2px 8px');
+            const pre = el('pre', '', 'display:none;max-height:320px;overflow:auto;font-size:10px;background:var(--color-back);padding:6px;margin-top:4px');
+            btn.addEventListener('click', () => {
+                const shown = pre.style.display !== 'none';
+                pre.style.display = shown ? 'none' : 'block';
+                if (!shown) pre.textContent = JSON.stringify({ status: m.raw, sessions: m.sessions, queue: m.queue, recent: m.recent }, null, 2);
+            });
+            root.append(btn);
+            root.append(pre);
+        }, 0);
+        return dlg;
+    }
 
     // ------------------------------------------------------------------ element helpers
     function allElements() { return (typeof Outliner !== 'undefined' && Outliner.elements) || []; }
@@ -2257,22 +2976,61 @@
         inflate: { type: 'number' }, mirror_uv: { type: 'boolean' }, uv_offset: V2,
         visibility: { type: 'boolean' },
     };
+    /** The rectangle Blockbench's box-UV layout needs for a cube of size [w, h, d]: 2(d+w) wide, d+h tall. */
+    function boxFootprint(size) {
+        return { w: Math.ceil(2 * (size[2] + size[0])), h: Math.ceil(size[2] + size[1]) };
+    }
+    const footprintOf = (e) => { const f = boxFootprint([e.to[0] - e.from[0], e.to[1] - e.from[1], e.to[2] - e.from[2]]); return f.w + 'x' + f.h; };
+    /** Every box-UV cube already on the project's sheet, as the rectangle it occupies. */
+    function boxFootprints(project) {
+        const out = [];
+        const all = project && Array.isArray(project.elements) ? project.elements
+            : (typeof Cube !== 'undefined' && Array.isArray(Cube.all) ? Cube.all : []);
+        all.forEach((c) => {
+            if (!c || !c.box_uv || !Array.isArray(c.from) || !Array.isArray(c.to)) return;
+            const f = boxFootprint([c.to[0] - c.from[0], c.to[1] - c.from[1], c.to[2] - c.from[2]]);
+            const o = Array.isArray(c.uv_offset) ? c.uv_offset : [0, 0];
+            out.push({ x: Number(o[0]) || 0, y: Number(o[1]) || 0, w: f.w, h: f.h, name: c.name });
+        });
+        return out;
+    }
+    /** First-fit: the top-most, then left-most free rectangle for this footprint, or null when none. */
+    function packBoxUV(project, size, taken) {
+        const f = boxFootprint(size);
+        const W = (project && project.texture_width) || 16, H = (project && project.texture_height) || 16;
+        const hits = (x, y) => taken.some((r) => x < r.x + r.w && x + f.w > r.x && y < r.y + r.h && y + f.h > r.y);
+        for (let y = 0; y + f.h <= H; y++) {
+            for (let x = 0; x + f.w <= W; x++) {
+                if (!hits(x, y)) return { x: x, y: y, w: f.w, h: f.h };
+            }
+        }
+        return null;
+    }
+
     tool({
         name: 'place_cube', mechanism: EDIT,
-        description: 'Add cubes in one call (one undo entry). Each element: name, from, to, optional origin/rotation/inflate/mirror_uv/uv_offset. group puts them in a bone (default root); texture names the sheet (default the selected/first); uv "auto" (default) maps each face by Blockbench\'s auto-UV, "box" uses box UV at uv_offset, "none" leaves faces unmapped. The reply carries every cube\'s face rectangles and its envelope (neighbours on the same bone, gap per axis) so the next call needs no read.',
+        description: 'Add cubes in one call (one undo entry). Each element: name, from, to, optional origin/rotation/inflate/mirror_uv/uv_offset. group puts them in a bone (default root); texture names the sheet (default the selected/first); uv "auto" (default) maps each face by Blockbench\'s auto-UV, "box" uses box UV at uv_offset, "pack" is box UV placed by the plugin in free space on the sheet (first fit against every box-UV cube already there; refused with the size needed when the sheet is full), "none" leaves faces unmapped. The reply carries every cube\'s face rectangles and its envelope (neighbours on the same bone, gap per axis) so the next call needs no read.',
         inputSchema: {
             type: 'object',
             properties: {
                 project: PROJECT_ARG,
                 elements: { type: 'array', minItems: 1, items: { type: 'object', properties: CUBE_FIELDS, required: ['from', 'to'], additionalProperties: false } },
                 group: { type: 'string' }, texture: { type: 'string' },
-                uv: { type: 'string', enum: ['auto', 'box', 'none'] }, look: LOOK_ARG,
+                uv: { type: 'string', enum: ['auto', 'box', 'pack', 'none'] }, look: LOOK_ARG,
             },
             required: ['elements'], additionalProperties: false,
         },
-        run(args) {
+        run(args, ctx) {
             const parent = groupRef(args.group);
             const mode = args.uv || 'auto';
+            const pack = mode === 'pack';
+            // LAYING OUT A SHEET IS LABOUR, NOT JUDGEMENT (LOOP_KIT_DESIGN.md section 13): an entity
+            // author had to compute every box-UV footprint and a non-overlapping offset for it by
+            // hand, which a brief could pin for a dictated model and nothing could pin for a
+            // designed one. "pack" takes the footprint the box-UV layout will need and finds it a
+            // free rectangle on the current sheet, against every box-UV cube already on it.
+            const proj = ctx && ctx.project ? ctx.project : (typeof Project !== 'undefined' ? Project : null);
+            const taken = pack ? boxFootprints(proj) : null;
             const tex = mode === 'none' ? null : (allTextures().length ? findTexture(args.texture) : null);
             const made = undoEdit({ elements: [], outliner: true }, 'place_cube', (aspects) => {
                 return args.elements.map((e) => {
@@ -2282,9 +3040,18 @@
                         inflate: e.inflate || 0, mirror_uv: !!e.mirror_uv, autouv: mode === 'auto' ? 1 : 0, visibility: e.visibility !== false,
                     }).init();
                     c.addTo(parent);
-                    if (mode === 'box') {
+                    if (mode === 'box' || pack) {
                         if (typeof c.setUVMode === 'function') c.setUVMode(true); else c.box_uv = true;
-                        if (e.uv_offset) c.uv_offset = e.uv_offset;
+                        if (pack) {
+                            const spot = packBoxUV(proj, [e.to[0] - e.from[0], e.to[1] - e.from[1], e.to[2] - e.from[2]], taken);
+                            if (!spot) {
+                                fail('sheet full: cube "' + (e.name || 'cube') + '" needs a ' + footprintOf(e) + ' box-UV footprint and no free rectangle of that size is left on the '
+                                    + ((proj && proj.texture_width) || 16) + 'x' + ((proj && proj.texture_height) || 16) + ' sheet ('
+                                    + taken.length + ' box-UV cube(s) on it) - grow the sheet with texture op:resize {width, height, mode:"pad", project_uv:true} (or project op:set {texture_width, texture_height} before any texture exists) and place again');
+                            }
+                            c.uv_offset = [spot.x, spot.y];
+                            taken.push(spot);
+                        } else if (e.uv_offset) c.uv_offset = e.uv_offset;
                     }
                     if (tex) c.applyTexture(tex, true);
                     if (mode !== 'none') c.mapAutoUV();
@@ -2827,7 +3594,7 @@
 
     tool({
         name: 'risky_eval', mechanism: EDIT,
-        description: 'Run JavaScript inside Blockbench, in the resolved project, and return its value (JSON). PROJECT is that project and GAME is this session\'s game bridge URL, both in scope: hand them to a plugin API (api.save(PROJECT), {bridge: GAME}) instead of letting the API read the global Project or a hardcoded port, and a call that resolved wrongly cannot write silently. An expression or statements; comments and console are fine; a returned Promise is awaited and a rejection is an error reply. The older plugins\' globals are here and both take them: mcptoolkitPush({project: PROJECT, bridge: GAME}), mcptoolkitEntity({action, project: PROJECT, bridge: GAME}).',
+        description: 'Run JavaScript inside Blockbench, in the resolved project, and return its value (JSON). In scope: PROJECT (that project; null when none is open), GAME (this session\'s game bridge URL) and SESSION (this session\'s id; null by curl). Hand them to a plugin API instead of letting it read the global Project or a hardcoded port, so a call that resolved wrongly cannot write silently. An expression or statements; comments and console are fine; a returned Promise is awaited and a rejection is an error reply. The older plugins\' globals are here and take them: mcptoolkitPush({project: PROJECT, bridge: GAME}), mcptoolkitEntity({action, project: PROJECT, bridge: GAME, session: SESSION}).',
         inputSchema: { type: 'object', properties: { project: PROJECT_ARG, code: { type: 'string' } }, required: ['code'], additionalProperties: false },
         async run(args, ctx) {
             // PROJECT: the project this call resolved to (ArmorPieces' measurement of 2026-09-07, ask
@@ -2836,13 +3603,21 @@
             // the code ASSERT which project it is writing. The function shapes take it as a
             // parameter; the script shape gets a `const` in the eval's own lexical scope (indirect
             // eval hosts lexical declarations in its own environment, so nothing leaks).
-            const project = ctx.project;
+            // NULL when no project is open anywhere in this window, which is the state the dock and
+            // every fresh agent window are in (section 12.6). Null and not undefined: code that
+            // hands PROJECT to a plugin API must be able to see that there is nothing to hand.
+            const project = ctx.project || null;
             // GAME rides in beside it, from the session record (TODO.md 1.9). Same argument one
             // dimension over: the older plugins carried a hardcoded 25599, which since per-project
             // ports names the toolkit's own game and not the one this session drives. A session the
             // shim never told (a plugin driven by hand, curl) gets null, and a plugin handed null
             // REFUSES rather than dialling a plausible default.
             const game = (ctx.session && ctx.session.game) || null;
+            // SESSION is the third local (section 13): the id of the session making this call, so a
+            // plugin API that stakes something in the game per session - the entity plugin's preview
+            // tag - can be handed it, and two sessions pushing into one game stop overwriting each
+            // other's entity. Null for a caller with no session block (curl by hand).
+            const sessionId = (ctx.session && ctx.session.id && ctx.session.id !== 'anonymous') ? ctx.session.id : null;
             // Three shapes, tried in order, and the code runs ONCE: an expression (wrapped in a return,
             // so `await` works inside it); statements, whose LAST value is the answer the way the old
             // plugin's eval answered (`let t = Texture.all[0]; t.name`) - a script, so a parse failure
@@ -2851,17 +3626,19 @@
             // `return` answered null).
             const AsyncFunction = Object.getPrototypeOf(async function () { }).constructor;
             let expr = null;
-            try { expr = new AsyncFunction('PROJECT', 'GAME', 'return (' + args.code + '\n)'); } catch (e) { expr = null; }
+            try { expr = new AsyncFunction('PROJECT', 'GAME', 'SESSION', 'return (' + args.code + '\n)'); } catch (e) { expr = null; }
             let value;
-            if (expr) value = expr(project, game);
+            if (expr) value = expr(project, game, sessionId);
             else if (!/\breturn\b|\bawait\b/.test(args.code)) {
                 globalThis.__mcptkEvalProject = project;
                 globalThis.__mcptkEvalGame = game;
+                globalThis.__mcptkEvalSession = sessionId;
                 try {
                     value = (0, eval)('const PROJECT = globalThis.__mcptkEvalProject;\n'
-                        + 'const GAME = globalThis.__mcptkEvalGame;\n' + args.code);
-                } finally { delete globalThis.__mcptkEvalProject; delete globalThis.__mcptkEvalGame; }
-            } else value = new AsyncFunction('PROJECT', 'GAME', args.code)(project, game);
+                        + 'const GAME = globalThis.__mcptkEvalGame;\n'
+                        + 'const SESSION = globalThis.__mcptkEvalSession;\n' + args.code);
+                } finally { delete globalThis.__mcptkEvalProject; delete globalThis.__mcptkEvalGame; delete globalThis.__mcptkEvalSession; }
+            } else value = new AsyncFunction('PROJECT', 'GAME', 'SESSION', args.code)(project, game, sessionId);
             if (value && typeof value.then === 'function') value = await value;
             let json;
             try { json = JSON.parse(JSON.stringify(value === undefined ? null : value)); } catch (e) { json = String(value); }
@@ -2871,7 +3648,7 @@
 
     tool({
         name: 'trigger_action', mechanism: EDIT,
-        description: 'Trigger a Blockbench action by its BarItems id (e.g. "select_all", "delete", "screenshot_model").',
+        description: 'Trigger a Blockbench action by its BarItems id (e.g. "select_all", "delete", "screenshot_model"). Runs with no project open, so it reaches the menu actions of a window that has nothing in it.',
         inputSchema: { type: 'object', properties: { project: PROJECT_ARG, id: { type: 'string' } }, required: ['id'], additionalProperties: false },
         run(args) {
             const a = typeof BarItems !== 'undefined' ? BarItems[args.id] : null;
@@ -2960,14 +3737,41 @@
     for (const t of TOOLS) BY_NAME[t.name] = t;
     /** Tools that need no open project. Everything else refuses without one, naming the fix. */
     const NO_PROJECT = { project: true };
+    /**
+     * Tools that drive THE APP rather than a model, and so need a project only when there is one
+     * (section 12.6). Without this the dock could not be driven at all: it holds no project by
+     * design, so `risky_eval` and `trigger_action` answered "no project is open" there - the window
+     * that governs every other one was unobservable to an agent for the same reason its panel was
+     * invisible to a person, and every probe of it had to open a throwaway project first.
+     *
+     * A project that IS open is still resolved exactly as before, held_by guard included: this
+     * widens the gate for an EMPTY window and changes nothing about a window somebody is working
+     * in, which is where the isolation rules earn their keep.
+     */
+    const PROJECT_OPTIONAL = { risky_eval: true, trigger_action: true };
 
     function manifest() {
         return TOOLS.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema, mechanism: t.mechanism }));
     }
 
     let chain = Promise.resolve();
+    /**
+     * ONE QUEUE FOR EVERY SESSION, and since 0.11.0 one that can be SEEN and that DROPS a call whose
+     * caller has gone (design section 13). A `place_cube` queued behind a two-minute push used to
+     * run after the shim had told its agent the call failed, and the retry doubled it. `waiting` is
+     * how many are behind the running one; `running` is what the running one is and for whom.
+     */
+    let running = null; // {name, session, at}
+    let waiting = 0;
+    function queueBlock() {
+        return {
+            running: running ? { name: running.name, session: running.session, s: Math.round((now() - running.at) / 1000) } : null,
+            waiting: waiting,
+        };
+    }
     function enqueue(fn) {
-        const run = () => fn();
+        waiting++;
+        const run = () => { waiting--; return fn(); };
         const p = chain.then(run, run);
         chain = p.then(() => undefined, () => undefined);
         return p;
@@ -2984,7 +3788,7 @@
             reapSessions();
             const ctx = { session: sess, mechanism: def.mechanism };
             let projectBlock = null;
-            if (!NO_PROJECT[name]) {
+            if (!NO_PROJECT[name] && !(PROJECT_OPTIONAL[name] && !projects().length)) {
                 projectBlock = resolveProject(args || {}, sess, true);
                 ctx.project = projectBlock.project;
                 if (def.mechanism === EDIT) guardHeld(ctx.project, sess);
@@ -3012,8 +3816,32 @@
             return out;
         }
     }
-    function call(name, args, sessionBlock) {
-        return enqueue(() => perform(name, args, sessionBlock));
+    /**
+     * The eviction note rides the ENVELOPE, so a refusal carries it as well as a result - EVERY
+     * refusal, which is why it is stamped in `call` and not in `perform`: an argument refusal and an
+     * unknown tool answer before `perform` has resolved the session, and the harness found both
+     * answering without the note.
+     */
+    function stampWindow(env, sess) {
+        const ev = evictionNote(sess);
+        if (ev) env.window = ev;
+        return env;
+    }
+    /**
+     * `alive` answers whether the caller is still waiting: a request whose socket closed before its
+     * turn is skipped, recorded as such, and answered to nobody. The shim aborts at two minutes, so
+     * this is what makes that ceiling true rather than a sentence.
+     */
+    function call(name, args, sessionBlock, alive) {
+        return enqueue(async () => {
+            if (alive && !alive()) {
+                const sess = session(sessionBlock);
+                noteCall(name, false, 0, sess, 'dropped: the caller gave up before its turn');
+                return { ok: false, dropped: true, error: 'dropped: the caller gave up before this call\'s turn in the queue' };
+            }
+            running = { name: name, session: (sessionBlock && sessionBlock.id) || null, at: now() };
+            try { return stampWindow(await perform(name, args, sessionBlock), session(sessionBlock)); } finally { running = null; }
+        });
     }
 
     // ------------------------------------------------------------------ transport
@@ -3029,6 +3857,8 @@
         });
         if (!proc) return null;
         if (typeof proc.getBuiltinModule !== 'function') throw new Error('process.getBuiltinModule is missing (Node ' + (proc.versions && proc.versions.node) + ')');
+        // The same grant is what lets an owned instance read who it is for (readOwned).
+        owned = readOwned(proc);
         httpModule = proc.getBuiltinModule('http');
         return httpModule;
     }
@@ -3068,13 +3898,34 @@
      * plugin sees (the connection count is the shared-id signal); after that a newline every
      * PRESENCE_BEAT_MS keeps intermediaries from closing an idle socket.
      */
-    const presence = new Set();
+    /** Every open presence response, and whose it is - so an eviction can find the ones to tell. */
+    const presence = new Map(); // res -> session id
+    /**
+     * Tell a session, through the socket it is already holding, that this window is not its any
+     * more: one last line, then the close. The shim reads the line before the close arrives, and
+     * `reconcileWindow` then forgets the window instead of re-claiming it (section 13). Its own
+     * session record goes with the socket, as it always did, so the claim cannot be re-made by a
+     * clock.
+     */
+    function evictPresence(sid, reason) {
+        const told = [];
+        for (const [res, id] of [...presence]) {
+            if (id !== sid) continue;
+            try {
+                res.write(JSON.stringify({ ok: true, evicted: true, session: sid, window: WINDOW_ID, port: boundPort, reason: reason || 'released',
+                    note: 'window ' + WINDOW_ID + ' (port ' + boundPort + ') is no longer this session\'s (' + (reason || 'released') + '); the next call resolves a window of its own' }) + '\n');
+            } catch (e) { /* the close below follows */ }
+            told.push(res);
+            setTimeout(() => { try { res.destroy(); } catch (e) { /* gone */ } }, 50);
+        }
+        return told;
+    }
     function holdPresence(req, res, sid) {
         if (!sid) return answer(res, 400, { ok: false, error: 'GET /presence needs the X-MCPTK-Session header' });
         const s = session({ id: String(sid), client: req.headers['x-mcptk-client'], profile: req.headers['x-mcptk-profile'] });
         const sock = req.socket;
         s.connections.add(sock);
-        presence.add(res);
+        presence.set(res, s.id);
         res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' });
         res.write(JSON.stringify({ ok: true, session: s.id, connections: s.connections.size, project: (projects().find((p) => p.uuid === s.project) || {}).name || null }) + '\n');
         const beat = setInterval(() => { try { res.write('\n'); } catch (e) { /* the close below follows */ } }, PRESENCE_BEAT_MS);
@@ -3096,9 +3947,39 @@
         res.on('close', release);
         res.on('error', release);
     }
+    /**
+     * THE DOOR REFUSES A BROWSER (design section 13). A page in a browser tab can blind-POST
+     * `risky_eval` or `POST /close {force:true}` to a loopback port as a request that needs no
+     * preflight; a browser sends an `Origin` it cannot forge, and that is the one thing that tells
+     * such a page from a local process (curl, the shim, another window's plugin), which sends none.
+     * The rule is the toolkit's own `McpEndpoint.isLoopbackOrigin`, applied to the game's `/cmd` in
+     * the same release: absent, blank or "null" is fine; a loopback http(s) origin is fine; anything
+     * else is 403 and one sentence. MEASURED FIRST, 2026-09-13: the Blockbench renderer (a `file://`
+     * page) sends NO Origin header on its own cross-window fetches, GET or POST, so the dock's beats
+     * and every `reach()` pass. No token: a token is a secret the person would have to carry into a
+     * curl, and the threat here is a browser tab, not a local process.
+     */
+    function isLoopbackOrigin(origin) {
+        if (origin === undefined || origin === null) return true;
+        const o = String(origin).trim().toLowerCase();
+        if (!o || o === 'null') return true;
+        if (!(o.startsWith('http://') || o.startsWith('https://'))) return false;
+        let host = o.slice(o.indexOf('://') + 3);
+        const slash = host.indexOf('/');
+        if (slash >= 0) host = host.slice(0, slash);
+        const colon = host.lastIndexOf(':');
+        if (colon > 0 && host.indexOf(']') < colon) host = host.slice(0, colon);
+        return host === '127.0.0.1' || host === 'localhost' || host === '[::1]' || host === '::1';
+    }
     async function handle(req, res) {
         const url = (req.url || '/').split('?')[0];
         const sid = req.headers['x-mcptk-session'];
+        if (!isLoopbackOrigin(req.headers.origin)) {
+            // In the panel's recent calls, so a person can see that a page tried.
+            noteCall(req.method + ' ' + url, false, 0, null, 'refused: Origin ' + String(req.headers.origin).slice(0, 80));
+            return answer(res, 403, { ok: false, error: 'this door serves loopback origins only: a page in a browser cannot drive Blockbench through it',
+                origin: String(req.headers.origin).slice(0, 200) });
+        }
         // A SCAN IS NOT A SESSION (section 11.3e). Registering every id that merely carried a header
         // meant `GET /hello` did it - and every shim sends that to every port in the range every time
         // it looks for a window. Window 25804 was found holding ELEVEN session records, all left by
@@ -3116,7 +3997,7 @@
             if (!sb || !sb.id) return answer(res, 400, { ok: false, error: 'POST ' + url + ' needs {session:{id}} or the X-MCPTK-Session header' });
             // A refusal is 200 with ok:false, as POST /cmd's is: the shim reads the envelope, and a
             // claim it did not win is an ordinary answer, not a transport failure.
-            return answer(res, 200, url === '/claim' ? claimWindow(sb, body) : openWindow(sb));
+            return answer(res, 200, url === '/claim' ? claimWindow(sb, body) : await openWindow(sb));
         }
         if (req.method === 'GET' && url === '/dock') {
             return answer(res, isDock ? 200 : 404, isDock ? dockRoster()
@@ -3148,7 +4029,12 @@
             if (!body.tool) return answer(res, 400, { ok: false, error: 'POST /cmd needs {tool, args, session}' });
             // A plain string is an id (a curl by hand); the shim sends the {id, client, profile} block.
             const sb = typeof body.session === 'string' ? { id: body.session } : (body.session || (sid ? { id: String(sid) } : null));
-            const out = await call(body.tool, body.args || {}, sb);
+            // Still waiting? A socket the caller closed while this sat in the queue is a call
+            // nobody wants run (section 13). Checked at its TURN, not here.
+            const sock = req.socket;
+            const alive = () => !((sock && sock.destroyed) || res.destroyed || res.writableEnded);
+            const out = await call(body.tool, body.args || {}, sb, alive);
+            if (!alive()) return;
             return answer(res, 200, out);
         }
         answer(res, 404, { ok: false, error: 'no route ' + req.method + ' ' + url,
@@ -3178,12 +4064,19 @@
     function start(opts) {
         opts = opts || {};
         if (server || starting) return status();
+        // A window that is opening a door is not on its way out. `closing` latches so that a sweep
+        // cannot fire twice, and `window.close()` can be a silent no-op (Blockbench may cancel the
+        // unload); without this reset such a window would serve on, never sweeping again.
+        closing = false;
         let http;
         try { http = nativeHttp(opts.prompt); } catch (e) { lastError = e.message; return status(); }
         if (!http) { lastError = 'permission for `process` not granted yet: Tools > MCP Toolkit Bridge > Start asks for it'; return status(); }
-        const base = (typeof settings.port === 'number' && Number.isInteger(settings.port) && settings.port >= 0 && settings.port < 65536) ? settings.port : DEFAULT_PORT;
+        // An owned instance binds the port it was handed and nothing else: there is no range to walk,
+        // because there is no other window of this Blockbench for the port to be a name among.
+        const base = owned ? owned.port
+            : (typeof settings.port === 'number' && Number.isInteger(settings.port) && settings.port >= 0 && settings.port < 65536) ? settings.port : DEFAULT_PORT;
         // Port 0 is "any free port" and has no neighbours to walk to (the harness uses it).
-        const span = base === 0 ? 1 : PORT_SPAN;
+        const span = (owned || base === 0) ? 1 : PORT_SPAN;
         starting = true;
         const mine = ++generation;
         let i = 0;
@@ -3213,28 +4106,63 @@
                 starting = false;
                 lastError = null;
                 applyShare();
+                if (owned) {
+                    // No handoff to adopt, no dock to find, no beat to start: the daemon that set
+                    // the environment is the government of this instance.
+                    refreshIdentity();
+                    return;
+                }
                 // A port is what a shim comes looking for, so the identity somebody left for this
                 // window is taken the moment there is one to find - not at onload, which runs before
                 // the walk and would let a second window take the first one's handoff.
                 adoptPending();
                 refreshIdentity();
-                // The dock is asked what this window is the moment there is a port to be told about,
-                // and its answer OUTRANKS the handoff above (section 11.7) - which is what makes a
-                // role something that can be corrected later rather than guessed once at boot.
-                if (!isDock) { startBeat(); Promise.resolve(findDock()).catch(() => { /* the beat retries */ }); }
+                if (isDock) {
+                    // A DOCK THAT RESTARTED IS STILL THE DOCK (section 13): a base-port change in
+                    // Settings comes through here with the role kept, and until 0.11.0 a dock that
+                    // started again kept `isDock` and never scanned again. The hint is re-written
+                    // because the port may have changed, and the scan is what fills the roster.
+                    saveSettings({ dock_port: boundPort });
+                    makeDockPanel();
+                    startDockScan();
+                } else {
+                    // The dock is asked what this window is the moment there is a port to be told
+                    // about, and its answer OUTRANKS the handoff above (section 11.7) - which is what
+                    // makes a role something that can be corrected later rather than guessed once.
+                    startBeat();
+                    Promise.resolve(findDock()).catch(() => { /* the beat retries */ });
+                }
             });
         };
         attempt();
         return status();
     }
-    function stop() {
+    /**
+     * Stop the door. An EXPLICIT stop resigns the dock: a dock with no door is not the dock, and the
+     * stored port would send every window looking at one that cannot answer. `opts.keep` is the
+     * internal restart (`restart`), which keeps the role for `start` to pick up again.
+     */
+    function stop(opts) {
+        opts = opts || {};
         // Presence responses never end on their own; a server.close() would wait on them forever.
-        for (const res of [...presence]) { try { res.destroy(); } catch (e) { /* gone */ } }
-        if (server) { try { if (server.closeAllConnections) server.closeAllConnections(); server.close(); } catch (e) { /* closing */ } server = null; }
+        // Whoever holds them is told first: a stopped door is a window they lost.
+        const told = claimedBy ? evictPresence(claimedBy, 'the bridge in this window was stopped') : [];
+        for (const res of [...presence.keys()]) { if (told.indexOf(res) >= 0) continue; try { res.destroy(); } catch (e) { /* gone */ } }
+        if (server) {
+            const s = server;
+            server = null;
+            try { if (s.closeIdleConnections) s.closeIdleConnections(); s.close(); } catch (e) { /* closing */ }
+            // The rest of the connections a beat later, so the eviction line above has left the
+            // socket before it is cut. The door is already shut to new connections.
+            setTimeout(() => { try { if (s.closeAllConnections) s.closeAllConnections(); } catch (e) { /* gone */ } }, 80);
+        }
         // Cancels a port walk still in flight: its listen callback checks the generation and gives
         // the port back rather than quietly becoming a live door after a stop.
         generation++;
         starting = false;
+        // The hint is compared BEFORE the port is forgotten: until 0.11.0 `boundPort` was nulled
+        // first and the comparison below could never be true, so a stopped dock never cleared it.
+        const wasPort = boundPort;
         boundPort = null;
         // A window with no door owns nothing: whoever claimed it must be free to find another.
         claimedBy = null;
@@ -3244,16 +4172,30 @@
         stopBeat();
         stopDockScan();
         dockPort = null;
-        // A dock with no door is not the dock: the stored port would send every window looking at one
-        // that cannot answer, and each of them would scan the whole range for nothing.
-        if (isDock && settings.dock_port === boundPort) saveSettings({ dock_port: null });
+        if (isDock) {
+            if (settings.dock_port === wasPort) saveSettings({ dock_port: null });
+            if (!opts.keep) {
+                isDock = false;
+                removeDockPanel();
+                for (const k of Object.keys(roster)) delete roster[k];
+                for (const b of births.splice(0, births.length)) { if (b.resolve) b.resolve(null); }
+            }
+        }
         refreshIdentity();
         return status();
+    }
+    /** Stop and start through one path that keeps the role: what a base-port change does. */
+    function restart(opts) {
+        stop({ keep: true });
+        return start(opts);
     }
     function status() {
         const st = Object.assign({ plugin: PLUGIN_ID, version: PLUGIN_VERSION, listening: !!server && !!(server.address && server.address()) },
             windowBlock(),
-            { url: boundPort ? 'http://127.0.0.1:' + boundPort : null, tools: TOOLS.length, sessions: Object.keys(sessions).length, connections: presence.size });
+            { url: boundPort ? 'http://127.0.0.1:' + boundPort : null, tools: TOOLS.length, sessions: Object.keys(sessions).length, connections: presence.size },
+            // The four numbers that decide how many windows there are and how long an empty one
+            // lives, in the one place a person is already looking when they ask why (12.4, 12.7).
+            { limits: { max_agent_windows: maxAgentWindows(), idle_claim_ms: idleMs(), empty_grace_ms: emptyMs(), beat_stale_ms: beatStaleMs() } });
         if (starting) st.starting = true;
         if (lastError) st.error = lastError;
         if (!st.listening && !httpModule) st.needs = 'the `process` permission (Tools > MCP Toolkit Bridge > Start)';
@@ -3262,54 +4204,135 @@
 
     // ------------------------------------------------------------------ the plugin
     let actions = [];
+    let parentAction = null;
+    let toggleAction = null;
+    /**
+     * ONE SUBMENU, not seven loose entries in Tools - which is what 0.9.0 had, and with two other
+     * plugins of this workspace in the same menu it took the menu over (section 12.5). `children` on
+     * an Action is what Blockbench nests a menu under; `armorpieces.js` in this same workspace does
+     * it the same way, for the same reason, and it is also what makes cleanup one node instead of
+     * seven.
+     *
+     * START AND STOP ARE ONE ENTRY, because they are one question with a state - `Action.setName`
+     * (on the prototype, live-checked) is what lets the entry carry the answer, so the menu says
+     * "Stop the bridge (running on 25801)" rather than offering both and neither saying which is
+     * true. The PARENT carries the port for the same reason: a stack of identical windows is
+     * tellable apart from the Tools menu alone.
+     */
+    function parentName() {
+        if (!boundPort) return 'MCP Toolkit Bridge (stopped)';
+        return 'MCP Toolkit Bridge (' + (isDock ? 'dock, ' : '') + 'port ' + boundPort + ')';
+    }
+    function toggleName() { return server && boundPort ? 'Stop the bridge (running on ' + boundPort + ')' : 'Start the bridge'; }
+    function refreshMenu() {
+        if (toggleAction && typeof toggleAction.setName === 'function') toggleAction.setName(toggleName());
+        if (parentAction && typeof parentAction.setName === 'function') parentAction.setName(parentName());
+    }
     function menu() {
-        const add = (id, name, icon, click) => { const a = new Action(id, { name, icon, description: name, click }); MenuBar.addAction(a, 'tools'); actions.push(a); };
-        add('mcptoolkit_bridge_start', 'MCP Toolkit Bridge: Start', 'power', () => {
-            const st = start({ prompt: true });
-            Blockbench.showQuickMessage(st.listening ? 'MCP Toolkit Bridge listening on ' + st.url : 'MCP Toolkit Bridge: ' + (st.error || st.needs || 'starting...'), 3000);
-            setTimeout(() => { const s2 = status(); if (s2.listening) Blockbench.showQuickMessage('MCP Toolkit Bridge listening on ' + s2.url, 2000); }, 500);
+        const mk = (id, name, icon, click) => {
+            const a = new Action(id, { name, icon, description: name, click });
+            actions.push(a);
+            return a;
+        };
+        toggleAction = mk('mcptoolkit_bridge_toggle', toggleName(), 'power', () => {
+            if (server) {
+                const wasDock = isDock;
+                stop();
+                Blockbench.showQuickMessage(wasDock
+                    ? 'MCP Toolkit Bridge stopped - this window is no longer the MCP Dock (a dock with no door is not the dock; Open the MCP Dock makes another)'
+                    : 'MCP Toolkit Bridge stopped', wasDock ? 5000 : 2000);
+            } else {
+                const st = start({ prompt: true });
+                Blockbench.showQuickMessage(st.listening ? 'MCP Toolkit Bridge listening on ' + st.url : 'MCP Toolkit Bridge: ' + (st.error || st.needs || 'starting...'), 3000);
+                setTimeout(() => { const s2 = status(); if (s2.listening) Blockbench.showQuickMessage('MCP Toolkit Bridge listening on ' + s2.url, 2000); }, 500);
+            }
+            refreshIdentity();
         });
-        add('mcptoolkit_bridge_stop', 'MCP Toolkit Bridge: Stop', 'power_off', () => { stop(); Blockbench.showQuickMessage('MCP Toolkit Bridge stopped', 2000); });
+        // THE DOCK (section 11), ONE ENTRY (section 12.5). "Open" and "show me the one that is
+        // already open" are the same wish, and 0.9.0 made a person read a refusal to find out which
+        // of its two entries they had wanted. Still never reachable over HTTP: a dock is a window a
+        // PERSON asked for.
+        const dockEntry = mk('mcptoolkit_bridge_dock', 'Open the MCP Dock', 'dock', async () => {
+            if (isDock) { Blockbench.showQuickMessage('MCP Toolkit Bridge: this window IS the MCP Dock', 2500); return; }
+            try {
+                const there = await whereIsDock();
+                if (there !== null) {
+                    await reach(there, '/focus', {});
+                    Blockbench.showQuickMessage('MCP Toolkit Bridge: the MCP Dock is on port ' + there + ' - raising it', 3000);
+                    return;
+                }
+                const out = await openDock();
+                Blockbench.showQuickMessage(out.ok ? 'MCP Toolkit Bridge: opening the MCP Dock' : 'MCP Toolkit Bridge: ' + out.error, 3500);
+            } catch (e) { Blockbench.showQuickMessage('MCP Toolkit Bridge: ' + String(e && e.message || e), 3000); }
+        });
+        const becomeDockEntry = mk('mcptoolkit_bridge_become_dock', 'Make this window the MCP Dock', 'hub', async () => {
+            const out = await makeDock();
+            Blockbench.showQuickMessage('MCP Toolkit Bridge: ' + (out.ok
+                ? 'this window is the MCP Dock (port ' + boundPort + '). It will not be claimed and will not close itself.'
+                : out.error), out.ok ? 5000 : 4000);
+        });
         // A person's window needs no protecting since 0.7.0 - it is theirs unless an agent asked for
         // it (design section 10) - so what the menu carries now is the opposite and rarer act: handing
         // THIS window over. Stored as the port, because settings are one store every window shares.
-        add('mcptoolkit_bridge_share', 'MCP Toolkit Bridge: Let agents use this window', 'group_add', () => {
+        const shareEntry = mk('mcptoolkit_bridge_share', 'Let agent sessions use this window', 'group_add', () => {
             setAllowAgents(undefined, true);
             Blockbench.showQuickMessage(allowAgents
                 ? 'MCP Toolkit Bridge: agent sessions may claim this window - they will switch the active tab to their own work'
                 + (boundPort ? ' (port ' + boundPort + ', remembered across restarts)' : '')
                 : 'MCP Toolkit Bridge: this window is yours again', 4000);
         });
-        // THE DOCK (section 11). Two entries because they answer two different situations: the
-        // ordinary one is "give me the window that shows me all the others", and the other is a person
-        // who already has an empty window in front of them and would rather spend that one than a
-        // seventh. Neither is reachable over HTTP - a dock is a window a PERSON asked for.
-        add('mcptoolkit_bridge_open_dock', 'MCP Toolkit Bridge: Open the MCP Dock', 'dock', () => {
-            Promise.resolve(openDock()).then((out) => {
-                Blockbench.showQuickMessage(out.ok ? 'MCP Toolkit Bridge: opening the MCP Dock' : 'MCP Toolkit Bridge: ' + out.error, 3500);
-            }).catch((e) => Blockbench.showQuickMessage('MCP Toolkit Bridge: ' + String(e && e.message || e), 3000));
-        });
-        add('mcptoolkit_bridge_become_dock', 'MCP Toolkit Bridge: Make this window the MCP Dock', 'hub', () => {
-            if (isDock) { Blockbench.showQuickMessage('MCP Toolkit Bridge: this window already is the MCP Dock', 2500); return; }
-            if (!boundPort) { Blockbench.showQuickMessage('MCP Toolkit Bridge: start the bridge in this window first', 3000); return; }
-            becomeDock();
-            Blockbench.showQuickMessage('MCP Toolkit Bridge: this window is the MCP Dock (port ' + boundPort + '). It will not be claimed and will not close itself.', 5000);
-        });
-        add('mcptoolkit_bridge_status', 'MCP Toolkit Bridge: Status', 'info', () => {
-            const st = status();
-            Blockbench.showMessageBox({ title: 'MCP Toolkit Bridge', message: JSON.stringify(st, null, 2) + '\n\nSessions: ' + JSON.stringify(Object.keys(sessions).map((id) => ({ id, client: sessions[id].client, project: (projects().find((p) => p.uuid === sessions[id].project) || {}).name || null, connections: sessions[id].connections.size, seen_s_ago: Math.round((now() - sessions[id].seen) / 1000) })), null, 2) });
-        });
-        add('mcptoolkit_bridge_settings', 'MCP Toolkit Bridge: Settings', 'settings', () => {
+        // STATUS IS PAINTED, NOT DUMPED (section 13): the same rows the start screen shows, with the
+        // sessions this window knows, and the raw JSON behind one button for whoever wants it.
+        const statusEntry = mk('mcptoolkit_bridge_status', 'Status...', 'info', () => openStatusDialog());
+        // The labels are SHORT and the explaining is done by one `info` line, because a label is a
+        // form's left column: 0.9.0 put a parenthesis-laden sentence in one and the dialog did not
+        // fit on screen (reported 2026-09-12). `width` is Blockbench's own knob for that.
+        const settingsEntry = mk('mcptoolkit_bridge_settings', 'Settings...', 'settings', () => {
             new Dialog({
-                id: 'mcptoolkit_bridge_settings', title: 'MCP Toolkit Bridge',
-                form: { port: { label: 'First port to scan (this window takes the first free one; the shim scans the same ' + PORT_SPAN + ')', type: 'number', value: settings.port }, autostart: { label: 'Start when Blockbench opens', type: 'checkbox', value: settings.autostart } },
+                id: 'mcptoolkit_bridge_settings', title: 'MCP Toolkit Bridge', width: 540,
+                form: {
+                    about: {
+                        type: 'info',
+                        text: 'Each window takes the first free port at or above the base and the shim scans the same '
+                            + PORT_SPAN + '. An agent window that stands empty with nothing asked of it is recycled: '
+                            + 'handed to the next session that needs one, then closed.',
+                    },
+                    port: { label: 'Base port', type: 'number', value: settings.port },
+                    autostart: { label: 'Start when Blockbench opens', type: 'checkbox', value: !!settings.autostart },
+                    max_agent_windows: { label: 'Agent windows at most', type: 'number', value: maxAgentWindows(), min: 1, max: PORT_SPAN, step: 1 },
+                    idle_claim_min: { label: 'Idle minutes before recycling', type: 'number', value: Math.round(idleMs() / 60000), min: 1, step: 1 },
+                },
                 onConfirm(form) {
-                    saveSettings({ port: Number(form.port) || DEFAULT_PORT, autostart: !!form.autostart });
-                    if (server) { stop(); start({ prompt: true }); }
-                    Blockbench.showQuickMessage('MCP Toolkit Bridge: scanning from port ' + settings.port, 2000);
+                    const port = Number(form.port) || DEFAULT_PORT;
+                    const moved = port !== settings.port;
+                    saveSettings({
+                        port: port,
+                        autostart: !!form.autostart,
+                        max_agent_windows: Math.max(1, Math.min(PORT_SPAN, Number(form.max_agent_windows) || MAX_AGENT_WINDOWS)),
+                        idle_claim_ms: Math.max(60000, (Number(form.idle_claim_min) || 15) * 60000),
+                    });
+                    // Only a changed BASE PORT is worth a restart, and a restart is not free: this
+                    // window would give up the port that is its name and come back as a different
+                    // one, which is a window every shim holding it has to re-find. The other three
+                    // settings are read live - IN EVERY WINDOW, since the store is the truth and
+                    // every window reloads on the `storage` event (section 13). The restart keeps
+                    // the role: a dock that moves its base port is still the dock.
+                    if (moved && server) restart({ prompt: true });
+                    refreshIdentity();
+                    Blockbench.showQuickMessage(moved ? 'MCP Toolkit Bridge: scanning from port ' + settings.port + ', in every window'
+                        : 'MCP Toolkit Bridge: at most ' + maxAgentWindows() + ' agent window(s), recycled after '
+                        + Math.round(idleMs() / 60000) + ' idle minutes - in every window', 3000);
                 },
             }).show();
         });
+        parentAction = new Action(PLUGIN_ID + '_menu', {
+            name: parentName(),
+            icon: 'hub',
+            description: 'The MCP toolkit\'s bridge into this Blockbench window: which window this is, who holds it, and the MCP Dock.',
+            children: [toggleAction, statusEntry, '_', dockEntry, becomeDockEntry, '_', shareEntry, settingsEntry],
+        });
+        actions.push(parentAction);
+        MenuBar.addAction(parentAction, 'tools');
     }
 
     // ------------------------------------------------------------------ crash-recovery guard
@@ -3381,15 +4404,33 @@
         variant: 'desktop',
         onload() {
             loadSettings();
+            // Before anything else, because this is the one question only the FIRST run in this
+            // renderer can answer (and it answers it by writing the mark).
+            newborn = markBorn();
             globalThis.mcptoolkitBridge = {
                 start, stop, status, manifest, call, settings: (patch) => (patch ? saveSettings(patch) : loadSettings()), sessions: () => sessions,
                 window: () => windowBlock(),
                 claim: (sb, opts) => claimWindow(sb, opts),
                 share: (v, persist) => setAllowAgents(v, persist),
                 adopt: () => adoptPending(),
+                // The asks in flight (section 12.4), and a way to forget one: a harness driving
+                // several phases of one session's life needs to say "that ask is over" where a real
+                // session would simply have waited `birth_ms` out.
+                asked: () => readAsked(),
+                forgetAsk: (id) => dropAsked(id),
                 sweep: () => sweep(),
                 role: () => role(),
                 dock: () => (isDock ? dockRoster() : { ok: false, error: 'not the dock', dock_port: settings.dock_port }),
+                // The start screen as DATA (section 12.1): what a person is shown and what they can
+                // press, without a DOM to read it out of.
+                startScreen: () => startScreenModel(),
+                claimIdle: () => ({ idle: claimIdle(), idle_ms: claimIdleMs(), limit_ms: idleMs() }),
+                menuNames: () => {
+                    const kids = parentAction ? (parentAction.children || (parentAction.o && parentAction.o.children)) : null;
+                    return { parent: parentName(), toggle: toggleName(),
+                        children: kids ? kids.map((c) => (typeof c === 'string' ? c : c.id)) : null };
+                },
+                scan: () => (isDock ? dockScan() : scanRange()),
                 openDock: () => openDock(),
                 becomeDock: () => becomeDock(),
                 resignDock: (to) => resignDock(to),
@@ -3399,13 +4440,29 @@
                 findDock: () => findDock(),
                 beat: () => beat(),
                 dockPort: () => dockPort,
-                scan: () => dockScan(),
                 recent: () => recent.slice(),
+                // Section 13: the checked become-dock, the painted status as data, the queue, the
+                // role-keeping restart, and the settings a `storage` event would deliver - the
+                // harness dispatches one by hand, because both its plugin instances share one
+                // process and no real event crosses them.
+                makeDock: () => makeDock(),
+                statusModel: () => statusModel(),
+                queue: () => queueBlock(),
+                restart: (opts) => restart(opts),
+                onStorage: (e) => onStorage(e),
+                pressItem: (item) => pressItem(item),
+                isLoopbackOrigin: (o) => isLoopbackOrigin(o),
+                pendingTtlMs: () => pendingTtlMs(),
             };
             if (typeof Action === 'function' && typeof MenuBar !== 'undefined') menu();
             installBackupGuard();
             watchTitle();
+            watchStorage();
             makePanel();
+            // The panel is for a window with a project in it; the start screen is for one without,
+            // which is every agent window and the dock (section 12.1). Both, always: a window
+            // changes between those two states by opening a project.
+            makeStartScreen();
             if (settings.autostart) start({ prompt: false });
         },
         onunload() {
@@ -3414,8 +4471,10 @@
             stopBeat();
             stopDockScan();
             unwatchTitle();
+            unwatchStorage();
             removePanel();
             removeDockPanel();
+            removeStartScreen();
             removeBackupGuard();
             delete globalThis.mcptoolkitBridge;
             for (const a of actions) { try { a.delete(); } catch (e) { /* gone */ } }

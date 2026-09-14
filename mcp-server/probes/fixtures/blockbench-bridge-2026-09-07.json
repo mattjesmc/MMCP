@@ -223,7 +223,7 @@
  },
  {
   "name": "place_cube",
-  "description": "Add cubes in one call (one undo entry). Each element: name, from, to, optional origin/rotation/inflate/mirror_uv/uv_offset. group puts them in a bone (default root); texture names the sheet (default the selected/first); uv \"auto\" (default) maps each face by Blockbench's auto-UV, \"box\" uses box UV at uv_offset, \"none\" leaves faces unmapped. The reply carries every cube's face rectangles and its envelope (neighbours on the same bone, gap per axis) so the next call needs no read.",
+  "description": "Add cubes in one call (one undo entry). Each element: name, from, to, optional origin/rotation/inflate/mirror_uv/uv_offset. group puts them in a bone (default root); texture names the sheet (default the selected/first); uv \"auto\" (default) maps each face by Blockbench's auto-UV, \"box\" uses box UV at uv_offset, \"pack\" is box UV placed by the plugin in free space on the sheet (first fit against every box-UV cube already there; refused with the size needed when the sheet is full), \"none\" leaves faces unmapped. The reply carries every cube's face rectangles and its envelope (neighbours on the same bone, gap per axis) so the next call needs no read.",
   "inputSchema": {
    "type": "object",
    "properties": {
@@ -308,6 +308,7 @@
      "enum": [
       "auto",
       "box",
+      "pack",
       "none"
      ]
     },
@@ -1091,7 +1092,7 @@
  },
  {
   "name": "risky_eval",
-  "description": "Run JavaScript inside Blockbench, in the resolved project, and return its value (JSON). PROJECT is that project and GAME is this session's game bridge URL, both in scope: hand them to a plugin API (api.save(PROJECT), {bridge: GAME}) instead of letting the API read the global Project or a hardcoded port, and a call that resolved wrongly cannot write silently. An expression or statements; comments and console are fine; a returned Promise is awaited and a rejection is an error reply. The older plugins' globals are here and both take them: mcptoolkitPush({project: PROJECT, bridge: GAME}), mcptoolkitEntity({action, project: PROJECT, bridge: GAME}).",
+  "description": "Run JavaScript inside Blockbench, in the resolved project, and return its value (JSON). In scope: PROJECT (that project; null when none is open), GAME (this session's game bridge URL) and SESSION (this session's id; null by curl). Hand them to a plugin API instead of letting it read the global Project or a hardcoded port, so a call that resolved wrongly cannot write silently. An expression or statements; comments and console are fine; a returned Promise is awaited and a rejection is an error reply. The older plugins' globals are here and take them: mcptoolkitPush({project: PROJECT, bridge: GAME}), mcptoolkitEntity({action, project: PROJECT, bridge: GAME, session: SESSION}).",
   "inputSchema": {
    "type": "object",
    "properties": {
@@ -1112,7 +1113,7 @@
  },
  {
   "name": "trigger_action",
-  "description": "Trigger a Blockbench action by its BarItems id (e.g. \"select_all\", \"delete\", \"screenshot_model\").",
+  "description": "Trigger a Blockbench action by its BarItems id (e.g. \"select_all\", \"delete\", \"screenshot_model\"). Runs with no project open, so it reaches the menu actions of a window that has nothing in it.",
   "inputSchema": {
    "type": "object",
    "properties": {

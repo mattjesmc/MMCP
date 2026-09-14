@@ -87,6 +87,7 @@ public final class McpToolkitClient {
         HumanCapture.register();    // §15 phase-2 client capture: the true input frame, per tick
         ClientTools.register();
         ScreenNav.register();
+        ScreenReentry.register();  // the re-entry tier's client half: rebuild a live screen's widgets
         UiTools.register();
         UiWorldClient.register();  // the door into the authoring world + the -Dmcptoolkit.ui.open latch
         UiDesignTools.register();

@@ -15,7 +15,8 @@ resolved the jar from a Maven coordinate had no way to reach the whole Blockbenc
   its Blockbench upstream, with session-bound projects, a queue, and an argument-checked 26-tool
   surface (geometry, textures, the painters, pictures, export, eval, animation). Replaces the
   third-party "Blockbench MCP" plugin. Needs one permission (`process`, for Node's `http`), asked
-  for by Tools > MCP Toolkit Bridge > Start - never by a dialog the plugin opens itself. Design:
+  for by Tools > MCP Toolkit Bridge > Start the bridge - never by a dialog the plugin opens itself.
+  Everything it offers a person is under ONE Tools entry, which carries this window's port. Design:
   `../docs/models/BLOCKBENCH_BRIDGE_DESIGN.md`. Tests: `mcptoolkit_bridge.test.mjs`.
 - `mcptoolkit_sync.js` - push a project's textures, model and small text assets into the running
   game's live resource pack (`mcptoolkitPush({...})`, or File > Push to Game), or into a mod's
@@ -23,7 +24,10 @@ resolved the jar from a Maven coordinate had no way to reach the whole Blockbenc
   `risky_eval`.
 - `mcptoolkit_entity.js` - entity geometry and animation to the toolkit's preview entity
   (`mcptoolkitEntity({action:'push'})`, then `stage_entity`), and the geometry check battery a
-  loop file runs after every edit. Design: `../docs/models/ENTITY_AUTHORING_DESIGN.md` section 6.
+  loop file runs after every edit (overlap, coplanar and near-coplanar faces, detachment mid-clip
+  and overlap past what a joint swing explains, UV, paint at the game's alpha cutout). A headless
+  push refuses while the check has problems; `force:"<why>"`
+  pushes anyway and says so. Design: `../docs/models/ENTITY_AUTHORING_DESIGN.md` section 6.
   Tests: `mcptoolkit_entity.test.mjs`.
 - `fixtures/` - the `.bbmodel` files the tests and probes use (`fixtures/README.md`).
 
@@ -33,7 +37,28 @@ window and works there (`BLOCKBENCH_ISOLATION_DESIGN.md` sections 6.3 and 10). A
 unless the plugin was asked to open it for an agent, so the one you are working in is never claimed
 and you set no flag to keep it; an agent-born window closes itself when nothing holds it and nothing
 is open in it, never the last one. Tools > MCP Toolkit Bridge > Let agents use this window hands
-yours over anyway, by port, so a restart remembers it. `ping` names the window a session got. `MCPTK_BLOCKBENCH` overrides: `host:from-to` is a range
+yours over anyway, by port, so a restart remembers it. `ping` names the window a session got.
+**What you do to a window reaches the session in it** (plugin 0.11.0, `BLOCKBENCH_ISOLATION_DESIGN.md`
+section 13): a Take back from the dock, a recycle, Stop the bridge, or closing the window by hand is
+said to that session on its next reply and on `ping` (`held: "none"` with the sentence), and its next
+call gets a window of its own. A claim is still never enforced on a call - the call that carries the
+news runs - and a session sharing a handed-over window is told nothing it was not told already.
+
+**WHAT YOU SEE, IN A WINDOW WITH NOTHING OPEN** (0.10.0, `BLOCKBENCH_ISOLATION_DESIGN.md` section
+12). A window with no project shows no panels at all - the start screen covers them - so every
+bridge window puts what it is and what you can do about it ON THE START SCREEN: which window this
+is, who holds it, what they last did, and buttons to show the MCP Dock or close this window. The
+DOCK's start screen is the control screen for all of them: one row per window with Focus, Adopt or
+Release, Close, and one button that closes every empty agent window at once. Tools > MCP Toolkit
+Bridge > Open the MCP Dock opens it, or raises the one that is already open.
+
+**HOW MANY WINDOWS THERE CAN BE.** At most three windows are ever opened for agent sessions
+(Settings), and a person's own windows are never counted. An agent window that stands empty with
+nothing asked of it for fifteen minutes is recycled - handed to the next session that needs one,
+then closed - even while the session holding it is still connected, because a socket says a process
+exists and not that anybody is working. A window with a project open is never touched.
+
+`MCPTK_BLOCKBENCH` overrides: `host:from-to` is a range
 to scan, a bare URL pins one window, `off` disables the upstream. The shim serves its tools under the
 `art`, `entity`, `standard` and `full` profiles
 (`../../mcp-server/index.mjs`, BLOCKBENCH_PROFILES / BLOCKBENCH_KEEP). Do not register a Blockbench

@@ -584,6 +584,40 @@ r = await api({ action: 'verify', model: 'lifted', doc: doc({
 ok('lifting it 1px clears the finding', r.counts.coplanar === 0 && r.counts.clear === 1,
   JSON.stringify(r.counts));
 
+// NEAR (0.7.0): the band between one plane and a clear lift. The same cap lifted 0.05px is not
+// coplanar (0.05 is a hundred times the plane epsilon) and not sunk, and from thirty blocks away
+// the depth buffer cannot tell its bottom face from the base's top face, so it flickers there
+// exactly as the flush cap does up close. It read `clear` until 0.7.0.
+{
+  const pair = (cap, name) => ({ action: 'verify', model: name, doc: doc({
+    cubes: [copA, cap], groups: [ovG],
+    outliner: [{ uuid: ovG.uuid, children: [copA.uuid, cap.uuid] }] }) });
+  const hair = Object.assign({}, copB, { uuid: uuid('c'), from: [-3, 10.05, -3], to: [3, 14.05, 3] });
+  r = await api(pair(hair, 'hair'));
+  ok('a cap lifted 0.05px is NEAR, and a finding',
+    r.ok === false && r.counts.near === 1 && r.counts.coplanar === 0 && r.counts.clear === 0,
+    JSON.stringify(r.counts));
+  ok('  measured: the faces, the lift and the area they share',
+    r.table[0].kind === 'near' && !!r.table[0].plane && Math.abs(r.table[0].plane.offset - 0.05) <= 1e-6
+    && r.table[0].plane.area > 30, JSON.stringify(r.table[0]));
+  r = await api(Object.assign(pair(hair, 'hair'), { action: 'check' }));
+  ok('  and the contract line names the lift and says why',
+    /  ! near body\/base \| cap_r1\/cap [+-]y\/[+-]y 0\.050px apart over 36\.0px2 \(z-fights at distance/.test(r.text)
+    && r.problems === 1, r.text);
+  // The lift can go the other way: sunk 0.05px the faces are the same hair apart, and `near` ranks
+  // above `sunk` because a sink this shallow is not the anti-z-fight trick, it is the z-fight.
+  const sunkHair = Object.assign({}, copB, { uuid: uuid('c'), from: [-3, 9.95, -3], to: [3, 13.95, 3] });
+  r = await api(pair(sunkHair, 'sunk_hair'));
+  ok('a cap sunk 0.05px is NEAR too, ranked above sunk', r.counts.near === 1 && r.counts.sunk === 0 && r.ok === false,
+    JSON.stringify(r.counts));
+  // And the band has an outer edge, or the lifted cap above would still be a finding.
+  const fifth = Object.assign({}, copB, { uuid: uuid('c'), from: [-3, 10.2, -3], to: [3, 14.2, 3] });
+  r = await api(pair(fifth, 'fifth'));
+  ok('a cap lifted 0.2px is past the band: clear', r.counts.near === 0 && r.counts.clear === 1 && r.ok === true,
+    JSON.stringify(r.counts));
+  ok('  and the report counts the band by name', /0 near \(<=0\.1px apart\)/.test(r.text), r.text.split('\n')[1]);
+}
+
 // 6c. A PLANTED UV COLLISION -- the auto-UV default, where every cube gets [0, 0].
 const uvA = cube({ name: 'a', from: [0, 0, 0], to: [4, 6, 2], uv_offset: [0, 0] });
 const uvB = cube({ name: 'b', from: [0, 8, 0], to: [3, 13, 2], uv_offset: [2, 1] });
@@ -683,6 +717,56 @@ r = await api({ action: 'verify', model: 'grow2', doc: grownDoc, pixels: sheetOf
 ok('with no previous report the same sheet is only partial',
   !r.uv.some((f) => f.kind === 'regrown') && r.uv.some((f) => f.kind === 'partial'), JSON.stringify(r.uv));
 
+// 6e. THE GAME'S ALPHA CUTOUT (0.6.0). entity.fsh discards alpha < 0.1 (RenderPipelines
+// ALPHA_CUTOUT_THRESHOLD_DEFAULT), so 25/255 is a hole in the world and 26/255 is paint. A check
+// that counted alpha > 0 called a face painted at alpha 20 complete; the game tears it out.
+{
+  const at = (alpha) => {
+    const s = sheetOf(Object.values(solo).filter((x) => x !== solo.north));
+    const [x, y, w, h] = solo.north;
+    for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) s.data[(yy * 64 + xx) * 4 + 3] = alpha;
+    return s;
+  };
+  r = await api({ action: 'verify', model: 'faint', doc: soloDoc, pixels: at(25) });
+  ok('a face painted at alpha 25 is UNPAINTED to the game, and the run fails',
+    r.uv.some((f) => f.kind === 'unpainted' && /solo.north$/.test(f.a)) && r.ok === false, JSON.stringify(r.uv));
+  ok('  with a faint NOTE that says why, counted but not failed twice',
+    r.paint.faint === 24 && r.uv.some((f) => f.kind === 'faint' && /24 texel/.test(f.detail) && /below 0\.1 \(26\/255\)/.test(f.detail))
+    && r.failures === 2, JSON.stringify({ faint: r.paint.faint, failures: r.failures, uv: r.uv }));
+  ok('  and the report line names the cutout', /alpha >= 26, the game's cutout/.test(r.text) && /24 faint texel/.test(r.text), r.text);
+  r = await api({ action: 'verify', model: 'faint', doc: soloDoc, pixels: at(26) });
+  ok('at alpha 26 the same face is paint: complete, clean, no note',
+    r.ok === true && r.paint.faint === 0 && !r.uv.some((f) => f.kind === 'faint'), JSON.stringify(r.uv));
+  r = await api({ action: 'check', model: 'faint', doc: soloDoc, pixels: at(25) });
+  ok('the contract carries faint as a - line and unpainted as a ! line',
+    /  ! unpainted body\/solo\.north/.test(r.text) && /  - faint 24 texel/.test(r.text) && r.problems === 2 && r.notes === 1, r.text);
+}
+
+// 6f. A FRACTIONAL SIZE IS NAMED AS ITSELF (0.6.0). The first live run placed a 2x4.5 leg and the
+// check's only word for it was `stray`; the painter fills the half row whole, the walk here rounds
+// the face out the same way, and the cube is the one line - not a stray count and an arithmetic
+// mismatch that both mean it.
+{
+  const halfCube = cube({ name: 'solo', from: [0, 0, 0], to: [4, 6.5, 2], uv_offset: [0, 0] });
+  const halfDoc = doc({ cubes: [halfCube], groups: [ovG], outliner: [{ uuid: ovG.uuid, children: [halfCube.uuid] }] });
+  // What paint_faces lays down for it: every face rounded out (the y faces grow to 7 rows).
+  const rounded = [[2, 0, 4, 2], [6, 0, 4, 2], [0, 2, 2, 7], [2, 2, 4, 7], [6, 2, 2, 7], [8, 2, 4, 7]];
+  r = await api({ action: 'verify', model: 'half', doc: halfDoc, pixels: sheetOf(rounded) });
+  ok('a 4x6.5x2 cube is a `fractional` finding naming the axis, and fails the run',
+    r.uv.some((f) => f.kind === 'fractional' && /solo$/.test(f.a) && /not whole on y/.test(f.detail) && /4x6\.5x2/.test(f.detail)) && r.ok === false,
+    JSON.stringify(r.uv));
+  ok('  and it is the ONLY finding: the painter\'s half row is this face\'s, not stray, and the arithmetic agrees',
+    r.failures === 1 && r.paint.stray === 0 && r.paint.ok === true && r.faces.every((f) => f.complete),
+    JSON.stringify({ failures: r.failures, stray: r.paint.stray, paint: r.paint, uv: r.uv }));
+  ok('  fractional comes first in the list, before anything the sheet says',
+    r.uv[0].kind === 'fractional', JSON.stringify(r.uv.map((f) => f.kind)));
+  r = await api({ action: 'verify', model: 'half', doc: halfDoc });
+  ok('  with no pixels it is still a finding (it is the cube, not the sheet)',
+    r.uv.some((f) => f.kind === 'fractional') && r.failures === 1, JSON.stringify(r.uv));
+  r = await api({ action: 'verify', model: 'whole', doc: soloDoc, pixels: sheetOf(Object.values(solo)) });
+  ok('  and a whole cube never earns it', !r.uv.some((f) => f.kind === 'fractional') && r.ok === true, JSON.stringify(r.uv));
+}
+
 // 6d''. THE CHECK CONTRACT (loop/loop.mjs): {text, problems, notes, full}, and `previous` flows.
 r = await api({ action: 'check', model: 'contract', doc: soloDoc, pixels: sheetOf(Object.values(solo)) });
 ok('a clean check is ok with zero problems and a one-line text',
@@ -694,6 +778,25 @@ ok('a check after a resize reports regrown faces as problems with ! lines and ca
   r.ok === false && r.problems >= 3 && /  ! regrown body\/solo\.north 24\/32/.test(r.text) && /ALL CLEAR|FINDING/.test(r.full),
   JSON.stringify(r.text));
 ok('the contract carries faces so the NEXT check can diff', Array.isArray(r.faces) && r.faces.length === 6, JSON.stringify(r.faces));
+
+// 6d'''. THE CONTRACT HOLDS WHEN THERE IS NOTHING TO CHECK (0.4.1). The first live loop run fired
+// this after `project op:new` and after `op:close`; both answered {ok:false, error}, which the shim
+// can only report as "check could not run" - on the reply that created the project. An empty
+// project and a window with nothing open are the states either side of a unit, not checker
+// failures; what convert REFUSES is a finding and is reported as one.
+r = await api({ action: 'check', model: 'empty', doc: doc({ cubes: [], groups: [], outliner: [] }) });
+ok('a check on an empty project is a zero-problem report with one note, in the contract',
+  r.problems === 0 && r.notes === 1 && /^verify: nothing to check yet \(nothing to export/.test(r.text) && typeof r.full === 'string',
+  JSON.stringify(r));
+r = await api({ action: 'check', project: null });
+ok('a check with PROJECT null (nothing open in the window) is the same zero-problem report',
+  r.problems === 0 && /nothing to check yet \(project is null/.test(r.text), JSON.stringify(r));
+const perFace = cube({ name: 'solo', from: [0, 0, 0], to: [4, 6, 2], uv_offset: [0, 0] });
+perFace.box_uv = false;
+r = await api({ action: 'check', model: 'perface',
+  doc: doc({ cubes: [perFace], groups: [ovG], outliner: [{ uuid: ovG.uuid, children: [perFace.uuid] }] }) });
+ok('a check on what convert refuses is ONE problem carrying the sentence convert gave',
+  r.problems === 1 && /^verify: 1 problem\(s\) need a decision\n  ! "solo" uses PER-FACE UV/.test(r.text), JSON.stringify(r.text));
 
 // 6e. A CLEAN MODEL MUST BE ABLE TO PASS. A check battery no real model can satisfy is a battery
 // that gets switched off, so this is as load-bearing as any of the plants above.
@@ -755,6 +858,107 @@ r = await api({ action: 'nonsense' });
 ok('an unknown action is named back', r.ok === false && /nonsense/.test(r.error), JSON.stringify(r));
 ok('every result is mirrored into mcptoolkitEntityLast',
   g.mcptoolkitEntityLast && g.mcptoolkitEntityLast.error === r.error);
+
+// ---------------------------------------------------------------------------------------------
+console.log('\n8b. section 13 of the isolation record: null, target, the merge, a stage that fails, the tag');
+// The refuse-on-null rule held for an ABSENT key and not for the `GAME` / `PROJECT` an agent
+// dutifully passes when they are null; `target` was never checked; the headless settings call
+// replaced whole per-project maps; a stage failure hid a push that had landed; and one `preview`
+// slot per game meant two sessions overwrote each other's body.
+{
+  const realFetch = g.fetch;
+  const calls = [];
+  // The transport: the game answers every stage_entity/clear/list call and records what it was
+  // asked; `rejectStage` makes the stage half fail the way a game without a body slot does.
+  let rejectStage = false;
+  g.fetch = async (to, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url: to, tool: body.tool, args: body.args });
+    if (body.tool === 'stage_entity' && rejectStage) return { json: async () => ({ ok: false, error: 'no such slot in this game' }) };
+    return { json: async () => ({ ok: true, result: { staged: body.tool === 'stage_entity', tag: body.args && body.args.tag } }) };
+  };
+  // The push half is the sync plugin's `mcptoolkitPush`, driven rather than re-implemented; here
+  // it is a stand-in that lands two assets and says so, which is exactly the case a stage failure
+  // must not hide.
+  const pushed = [];
+  g.mcptoolkitPush = async (o) => { pushed.push(o); return { ok: true, pushed: 2, bridge: o.bridge, paths: ['a.png', 'b.json'] }; };
+  const GAME = 'http://127.0.0.1:25640';
+
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: null });
+  ok('`bridge: null` is refused rather than resolved from the store',
+    r.ok === false && /bridge is null/.test(r.error) && /GAME is null/.test(r.error) && /set:\{bridges:/.test(r.error), JSON.stringify(r));
+  ok('  and nothing was pushed or staged', pushed.length === 0 && calls.length === 0, pushed.length + '/' + calls.length);
+  r = await api({ action: 'push', model: 'vocab', project: null, bridge: GAME });
+  ok('`project: null` is refused rather than resolved to the active tab',
+    r.ok === false && /project is null/.test(r.error) && /PROJECT is null because no project is open/.test(r.error), JSON.stringify(r));
+  r = await api({ action: 'verify', model: 'vocab', project: null });
+  ok('  on a verify as well', r.ok === false && /project is null/.test(r.error), JSON.stringify(r));
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME, target: 'game' });
+  ok('an unknown `target` is refused with the three values, and pushes nothing',
+    r.ok === false && /target must be one of live \| source \| both, not "game"/.test(r.error) && pushed.length === 0, JSON.stringify(r));
+
+  r = await api({ action: 'settings', set: { bridges: { a: '1' } } });
+  r = await api({ action: 'settings', set: { bridges: { b: '2' } } });
+  ok('a second per-project bridge keeps the first: the headless settings call merges the maps',
+    r.settings.bridges.a === '1' && r.settings.bridges.b === '2', JSON.stringify(r.settings.bridges));
+  ok('  and the sourceRoots map set in section 7 is still there beside them',
+    r.settings.sourceRoots.vocab === 'C:/tmp/mod/src/main/resources', JSON.stringify(r.settings.sourceRoots));
+  r = await api({ action: 'settings', set: { sourceRoots: { other: 'C:/o' } } });
+  ok('  in both maps', r.settings.sourceRoots.vocab === 'C:/tmp/mod/src/main/resources' && r.settings.sourceRoots.other === 'C:/o' && r.settings.bridges.a === '1', JSON.stringify(r.settings));
+
+  // THE GATE (0.6.0). vocab carries a planted overlap (torso | padding, 5.18px), which is exactly
+  // the model a push used to convert, stage and photograph without a word.
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME });
+  ok('a push of a model the check fails is refused WITH the check\'s lines, and nothing moves',
+    r.ok === false && /not pushed: the check has 1 problem\(s\)/.test(r.error) && /  ! overlap body\/torso \| tilt\/padding 5\.18px/.test(r.error)
+    && /force:"<why>"/.test(r.error) && pushed.length === 0 && calls.length === 0, JSON.stringify(r) + ' ' + pushed.length + '/' + calls.length);
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME, force: true });
+  ok('  a force that is not a reason is not a force', r.ok === false && /not pushed/.test(r.error) && pushed.length === 0, JSON.stringify(r));
+  const FORCE = 'harness: vocab carries a planted overlap';
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME, force: FORCE });
+  ok('force:"<why>" pushes anyway, and the reply carries the reason and the check',
+    r.ok === true && r.forced === FORCE && r.check && r.check.problems === 1 && /! overlap/.test(r.check.text)
+    && r.warnings.some((w) => /pushed with 1 problem\(s\).*forced: harness/.test(w)) && pushed.length === 1, JSON.stringify(r));
+  r = await api({ action: 'push', doc: soloDoc, model: 'solo', bridge: GAME });
+  ok('a clean model pushes with the check in the reply and no `forced`',
+    r.ok === true && r.check && r.check.problems === 0 && r.forced === undefined && pushed.length === 2, JSON.stringify(r));
+  pushed.length = 0;
+  calls.length = 0;
+
+  // A push that LANDS and a stage that does not: the model and texture are in the live pack whether
+  // or not a body wears them, and a reply that hid that sent authors pushing again.
+  rejectStage = true;
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME, force: FORCE });
+  ok('a stage that fails after the push landed answers ok:false WITH what landed',
+    r.ok === false && r.pushed === 2 && r.model === 'vocab' && r.staged === false && /pushed but not staged: no such slot/.test(r.error), JSON.stringify(r));
+  ok('  and the push really was made before the stage was tried',
+    pushed.length === 1 && calls.filter((c) => c.tool === 'stage_entity').length === 1, pushed.length + ' pushes, ' + calls.length + ' calls');
+  rejectStage = false;
+
+  // THE TAG: with the session id `risky_eval` hands over (SESSION, bridge plugin 0.11.0) and no
+  // explicit tag, the slot is per session; an explicit tag still wins; without either the shipped
+  // default stands, as it did.
+  const stageArgs = () => calls.filter((c) => c.tool === 'stage_entity').at(-1).args;
+  r = await api({ action: 'stage', model: 'vocab', bridge: GAME, session: 'mcptk-1' });
+  ok('a stage with a session and no tag stakes a slot of that session\'s own',
+    r.ok === true && stageArgs().op === 'stage' && stageArgs().tag === 'preview-mcptk-1', JSON.stringify(stageArgs()));
+  r = await api({ action: 'stage', model: 'vocab', bridge: GAME, session: 'mcptk-1', tag: 'x' });
+  ok('  an explicit tag still wins over the session', stageArgs().tag === 'x', JSON.stringify(stageArgs()));
+  r = await api({ action: 'stage', model: 'vocab', bridge: GAME });
+  ok('  and without either the shipped default stands', stageArgs().tag === 'preview', JSON.stringify(stageArgs()));
+  r = await api({ action: 'push', doc: vocab, model: 'vocab', bridge: GAME, session: 'mcptk-2', force: FORCE });
+  ok('  a push stages under the session\'s slot too', r.ok === true && stageArgs().tag === 'preview-mcptk-2', JSON.stringify(stageArgs()));
+  r = await api({ action: 'clear', bridge: GAME, session: 'mcptk-1' });
+  ok('a clear with a session clears THAT session\'s slot, not everybody\'s',
+    r.ok === true && stageArgs().op === 'clear' && stageArgs().tag === 'preview-mcptk-1', JSON.stringify(stageArgs()));
+  r = await api({ action: 'clear', bridge: GAME });
+  ok('  and a clear with neither clears the way it always did', stageArgs().op === 'clear' && stageArgs().tag === undefined, JSON.stringify(stageArgs()));
+  r = await api({ action: 'stage', model: 'vocab', bridge: GAME, session: 'a b/c' });
+  ok('  a session id is made safe for a tag', stageArgs().tag === 'preview-a_b_c', JSON.stringify(stageArgs()));
+
+  g.fetch = realFetch;
+  delete g.mcptoolkitPush;
+}
 
 // ---------------------------------------------------------------------------------------------
 console.log('\n9. ANIMATION: the flip again, arbitrated by its own inverse');
@@ -909,12 +1113,12 @@ function vanillaSample(keyframes, t, axis) {
 /** A two-bone rig on one axis: two 4px cubes whose centres sit `apart` px apart in Blockbench, and
  *  a position clip that slides the second one along x. Everything is axis aligned and only x moves,
  *  so the expected penetration is arithmetic a reader can check by hand: 4 - |separation|. */
-function slider(keyframes, { aCentre = 0, bCentre = 10 } = {}) {
-  const box = (cx) => ({ from: [cx - 2, 8, -2], to: [cx + 2, 12, 2] });
+function slider(keyframes, { aCentre = 0, bCentre = 10, bOffset = [0, 0, 0] } = {}) {
+  const box = (cx, o = [0, 0, 0]) => ({ from: [cx - 2 + o[0], 8 + o[1], -2 + o[2]], to: [cx + 2 + o[0], 12 + o[1], 2 + o[2]] });
   const ga = group({ name: 'a', origin: [aCentre, 10, 0] });
   const gb = group({ name: 'b', origin: [bCentre, 10, 0] });
   const ca = cube(Object.assign({ name: 'a_box', origin: [aCentre, 10, 0] }, box(aCentre)));
-  const cb = cube(Object.assign({ name: 'b_box', origin: [bCentre, 10, 0] }, box(bCentre)));
+  const cb = cube(Object.assign({ name: 'b_box', origin: [bCentre, 10, 0] }, box(bCentre, bOffset)));
   return doc({
     name: 'slider', cubes: [ca, cb], groups: [ga, gb],
     outliner: [{ uuid: ga.uuid, children: [ca.uuid] }, { uuid: gb.uuid, children: [cb.uuid] }],
@@ -967,6 +1171,142 @@ ok('the rest pose is clear', r.counts.overlap === 0, JSON.stringify(r.counts));
   const away = await api({ action: 'verify', doc: mirrored, model: 'slider_away' });
   ok('sliding the OTHER way collides with nothing, so the sign is load-bearing',
     away.animated.findings.length === 0, JSON.stringify(away.animated.findings));
+}
+
+// DETACHED (0.6.0): the mirror of the overlap arm. The same slider with b SUNK half a pixel into a
+// at rest (centres 3.5 apart, 4px cubes; b lifted 1 on y and z so no faces share a plane, which
+// would be a coplanar finding of its own) and a clip that slides b AWAY and back: a pair in
+// contact at rest opens a gap, which is what a leg on a wrong pivot does at the hip. Arithmetic
+// a reader can check: b's centre goes from -3.5 to -9.5 (authored +6, x negated), so the gap is
+// 9.5 - 2 - 2 = 5.5px at t=1 and 2.5px at both midpoints; the worst sample is the one reported.
+// (The clip goes out AND back because a looping clip wraps `length` onto 0: a two-keyframe clip's
+// last keyframe is never a sampled pose of its own.)
+{
+  const sunkPair = slider([{ time: 0, x: 0 }, { time: 1, x: 6 }, { time: 2, x: 0 }], { aCentre: 0, bCentre: 3.5, bOffset: [0, 1, 1] });
+  r = await api({ action: 'verify', doc: sunkPair, model: 'detach' });
+  ok('the pair is sunk at rest (in contact, not a finding)', r.counts.sunk === 1 && r.counts.overlap === 0, JSON.stringify(r.counts));
+  const d = r.animated.findings.find((f) => f.kind === 'detached');
+  ok('a pair touching at rest that opens a gap mid-clip is DETACHED, at the worst sample',
+    !!d && d.clip === 'slide' && near(d.t, 1) && near(d.depth, 5.5, 1e-3) && r.animated.findings.length === 1,
+    JSON.stringify(r.animated.findings));
+  ok('  and it fails the run, counted as a detachment and not as a fresh overlap',
+    r.ok === false && r.animated.detached === 1 && r.animated.fresh === 0 && r.failures === 1,
+    JSON.stringify({ ok: r.ok, detached: r.animated.detached, fresh: r.animated.fresh, failures: r.failures }));
+  ok('  the report row says so', /a\/a_box \| b\/b_box\s+5\.500px gap\s+DETACHED \(touching at rest\)/.test(r.text), r.text);
+  r = await api({ action: 'check', doc: sunkPair, model: 'detach' });
+  ok('  and the contract asks the question that fixes it',
+    /  ! detached slide @1 a\/a_box \| b\/b_box 5\.50px gap \(touching at rest - is the pivot at the joint\?\)/.test(r.text) && r.problems === 1,
+    r.text);
+  // The same clip on a pair that was NEVER in contact: nothing to detach from, so nothing is said,
+  // however far apart they end up. Without this rule every swinging foreleg would name its twin.
+  const apart = slider([{ time: 0, x: 0 }, { time: 1, x: 6 }, { time: 2, x: 0 }], { aCentre: 0, bCentre: 10, bOffset: [0, 1, 1] });
+  r = await api({ action: 'verify', doc: apart, model: 'apart' });
+  ok('a pair clear at rest cannot detach: sliding it away is clean', r.animated.findings.length === 0 && r.ok === true, JSON.stringify(r.animated.findings));
+  // A LEG ON THE RIGHT PIVOT stays in contact: a 2px-wide cube hanging from a pivot on its top
+  // face, sunk 0.5 into a slab above, swings 25 degrees and its near corner only goes deeper (by
+  // 1 * sin 25 = 0.42, inside the 1px sink tolerance). Contact is measured, not assumed, and this
+  // is the case neither arm may name. (A 4px-wide leg at 30 degrees buries its corner 1.5px deep;
+  // until 0.7.0 the OVERLAP arm named that, and the joint allowance below is the answer.)
+  const slab = cube({ name: 'slab', from: [-6, 12, -6], to: [6, 14, 6] });
+  const slabG = group({ name: 'slab', origin: [0, 13, 0] });
+  const leg = cube({ name: 'leg_box', from: [-1, 4.5, -1], to: [1, 12.5, 1], origin: [0, 12.5, 0] });
+  const legG = group({ name: 'leg', origin: [0, 12.5, 0] });
+  const hinge = doc({
+    name: 'hinge', cubes: [slab, leg], groups: [slabG, legG],
+    outliner: [{ uuid: slabG.uuid, children: [slab.uuid] }, { uuid: legG.uuid, children: [leg.uuid] }],
+    animations: [{
+      name: 'swing', length: 1, loop: 'loop',
+      animators: { [legG.uuid]: { name: 'leg', type: 'bone', keyframes: [
+        { channel: 'rotation', time: 0, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+        { channel: 'rotation', time: 0.5, interpolation: 'linear', data_points: [{ x: '25', y: '0', z: '0' }] },
+        { channel: 'rotation', time: 1, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+      ] } },
+    }],
+  });
+  r = await api({ action: 'verify', doc: hinge, model: 'hinge' });
+  ok('a leg pivoting at its joint stays in contact through a 25 degree swing: no detachment, no overlap',
+    r.animated.findings.length === 0 && r.counts.sunk === 1, JSON.stringify({ counts: r.counts, findings: r.animated.findings }));
+  // And the same leg on the WRONG pivot - the foot - swings the whole leg out of the slab. At 60
+  // degrees: the top drops 8 * (1 - cos 60) = 4px, its high corner comes back 1 * sin 60 = 0.87,
+  // so the top sits 12.5 - 4 + 0.87 = 9.37 against a slab bottom at 12: a 2.63px gap. (At 25
+  // degrees the drop is 0.75px and the top is still 0.17px inside the slab - a wrong pivot on a
+  // small swing is invisible, which is why the check reports the sample and not the rig.)
+  const badLeg = cube({ name: 'leg_box', from: [-1, 4.5, -1], to: [1, 12.5, 1], origin: [0, 4.5, 0] });
+  const badG = group({ name: 'leg', origin: [0, 4.5, 0] });
+  const bad = doc({
+    name: 'hinge_bad', cubes: [slab, badLeg], groups: [slabG, badG],
+    outliner: [{ uuid: slabG.uuid, children: [slab.uuid] }, { uuid: badG.uuid, children: [badLeg.uuid] }],
+    animations: [{
+      name: 'swing', length: 1, loop: 'loop',
+      animators: { [badG.uuid]: { name: 'leg', type: 'bone', keyframes: [
+        { channel: 'rotation', time: 0, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+        { channel: 'rotation', time: 0.5, interpolation: 'linear', data_points: [{ x: '60', y: '0', z: '0' }] },
+        { channel: 'rotation', time: 1, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+      ] } },
+    }],
+  });
+  r = await api({ action: 'verify', doc: bad, model: 'hinge_bad' });
+  const bd = r.animated.findings.find((f) => f.kind === 'detached');
+  ok('the same leg pivoting at its FOOT swings out of the slab: detached, at the swing\'s peak, by the gap computed here',
+    !!bd && near(bd.t, 0.5) && near(bd.depth, 12 - (12.5 - 8 * (1 - Math.cos(Math.PI / 3)) + Math.sin(Math.PI / 3)), 1e-2)
+    && r.animated.findings.length === 1 && r.ok === false,
+    JSON.stringify(r.animated.findings));
+
+  // WHAT A JOINT EXPLAINS (0.7.0). The 4px-wide leg on the RIGHT pivot: sunk 0.5 into the slab,
+  // its top face centred on the pivot, a 30 degree swing carries one top corner 2 * sin 30 = 1px
+  // deeper - 1.5px inside the slab, past the flat 1px sink tolerance, which is what the 0.6.0
+  // entry recorded as an overlap line against a correctly hinged leg. The allowance at that sample
+  // is sinkPx + reach * sin(angle) = 1 + 2 * 0.5 = 2.0, so it is clean - and REPORTED clean, in
+  // the long form's explained list, because a tolerance that hides its subject is a blanket skip.
+  const wide = cube({ name: 'leg_box', from: [-2, 4.5, -2], to: [2, 12.5, 2], origin: [0, 12.5, 0], uv_offset: [0, 20] });
+  const wideSwing = (deg, lift) => doc({
+    name: 'wide', cubes: [slab, wide], groups: [slabG, legG],
+    outliner: [{ uuid: slabG.uuid, children: [slab.uuid] }, { uuid: legG.uuid, children: [wide.uuid] }],
+    animations: [{
+      name: 'swing', length: 1, loop: 'loop',
+      animators: { [legG.uuid]: { name: 'leg', type: 'bone', keyframes: [
+        { channel: 'rotation', time: 0, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+        { channel: 'rotation', time: 0.5, interpolation: 'linear', data_points: [{ x: String(deg), y: '0', z: '0' }] },
+        { channel: 'rotation', time: 1, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+      ].concat(lift ? [
+        { channel: 'position', time: 0, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+        { channel: 'position', time: 0.5, interpolation: 'linear', data_points: [{ x: '0', y: String(lift), z: '0' }] },
+        { channel: 'position', time: 1, interpolation: 'linear', data_points: [{ x: '0', y: '0', z: '0' }] },
+      ] : []) } },
+    }],
+  });
+  r = await api({ action: 'verify', doc: wideSwing(30, 0), model: 'wide' });
+  ok('a 4px leg on the right pivot through 30 degrees is clean: the 1.5px corner burial is what the joint explains',
+    r.animated.findings.length === 0 && r.ok === true && r.counts.sunk === 1,
+    JSON.stringify({ counts: r.counts, findings: r.animated.findings }));
+  const ex = (r.animated.explained || []).find((f) => near(f.t, 0.5));
+  ok('  and the burial is still printed, with the allowance and the angle: 1.5px <= 2.00 at 30 deg',
+    !!ex && near(ex.depth, 1.5, 1e-3) && near(ex.allowed, 2, 1e-3) && near(ex.swing, 30, 1e-3)
+    && /slab \| leg\/leg_box\s+1\.500px <= 2\.00 at 30 deg/.test(r.text),
+    JSON.stringify(r.animated.explained) + '\n' + r.text);
+  // The same leg driven 1.5px UP into the slab at the peak of the same swing (a position channel
+  // on the hip; nothing a joint does): the corner sits 0.5 + 1.5 + 1 = 3.0px in against the same
+  // 2.0px allowance, and that is the line. The 15 degree midpoints exceed too (0.5 + 0.75 +
+  // 2 sin 15 = 1.77 against 1.52); the worst sample per pair is the one reported, worst meaning
+  // furthest past its own allowance.
+  r = await api({ action: 'verify', doc: wideSwing(30, 1.5), model: 'wide_driven' });
+  const drv = r.animated.findings[0];
+  ok('the same swing with the hip driven 1.5px in exceeds the allowance and is named, at the peak',
+    !!drv && drv.kind === 'overlap' && near(drv.t, 0.5) && near(drv.depth, 3, 1e-3) && near(drv.allowed, 2, 1e-3)
+    && drv.fresh === true && r.animated.findings.length === 1 && r.ok === false,
+    JSON.stringify(r.animated.findings));
+  r = await api({ action: 'check', doc: wideSwing(30, 1.5), model: 'wide_driven' });
+  ok('  and the contract line says what the joint explained of it',
+    /  ! animated swing @0\.5 slab \| leg\/leg_box 3\.00px \(a 30 deg joint swing explains 2\.00\)/.test(r.text) && r.problems === 1,
+    r.text);
+  // A translation with NO rotation is measured against the sink tolerance alone: the slider's
+  // midpoint burial above already proves it, and this is the same rule from the other side - the
+  // allowance is what a JOINT explains, and a joint that has not turned explains nothing.
+  r = await api({ action: 'verify', doc: wideSwing(0, 1.5), model: 'wide_pushed' });
+  const psh = r.animated.findings[0];
+  ok('the hip driven in with no swing at all is a plain overlap against the 1px sink tolerance',
+    !!psh && near(psh.depth, 2, 1e-3) && near(psh.allowed, 1, 1e-6) && psh.swing === 0 && r.ok === false,
+    JSON.stringify(r.animated.findings));
 }
 
 // CATMULLROM, against this file's own transcription of Mth.catmullrom. A sampler that quietly fell
@@ -1030,6 +1370,70 @@ console.log('\n11. animation refusals and drops');
   ok('a clip that animates nothing is not written, and says so',
     r.ok && !JSON.parse(r.json).animations && r.warnings.some((w) => /animates no exported bone/.test(w)),
     JSON.stringify(r.warnings));
+
+  // 9z. THE FLIPBOOK (0.5.0): a clip judged in the game as a row of frozen poses in one render.
+  // The transport is stubbed the way section 8 stubs it; what is asserted is the CONTRACT the
+  // animation loop's brief leans on - one push, N stages with clip_time, a row laid out to +x at
+  // the same yaw, a render argument that faces the row, and a clear that sweeps the whole row.
+  {
+    const realFetch = g.fetch;
+    const calls = [];
+    g.fetch = async (to, init) => {
+      const body = JSON.parse(init.body);
+      calls.push({ tool: body.tool, args: body.args });
+      if (body.tool === 'stage_entity' && body.args.op === 'stage') {
+        return { json: async () => ({ ok: true, result: { staged: true, tag: body.args.tag,
+          pos: body.args.pos || { x: 10.5, y: 1, z: -3.5 }, yaw: 170, parse: 'ok' } }) };
+      }
+      return { json: async () => ({ ok: true, result: { cleared: 1 } }) };
+    };
+    const pushed = [];
+    g.mcptoolkitPush = async (o) => { pushed.push(o); return { ok: true, pushed: 2 }; };
+    const GAME = 'http://127.0.0.1:25640';
+    const fbDoc = slider([{ time: 0, x: 0 }, { time: 1, x: -20 }]);
+    // The slider is BUILT to overlap mid-clip (section 10), so every flipbook here forces the gate.
+    const FB_FORCE = 'harness: the slider overlaps mid-clip by design';
+
+    r = await api({ action: 'flipbook', doc: fbDoc, model: 'slidey', bridge: GAME, session: 'mcptk-9', frames: 4, force: FB_FORCE });
+    const stages = calls.filter((c) => c.tool === 'stage_entity' && c.args.op === 'stage');
+    ok('flipbook pushes once without staging, then stages one frozen copy per frame',
+      r.ok === true && pushed.length === 1 && stages.length === 4 && stages.every((c) => typeof c.args.clip_time === 'number' && c.args.clip === 'slide'),
+      JSON.stringify(r));
+    ok('  the frames are evenly spaced over the clip and tagged per session and frame',
+      JSON.stringify(r.times) === '[0,0.25,0.5,0.75]'
+      && stages.map((c) => c.args.tag).join() === 'preview-mcptk-9-fb0,preview-mcptk-9-fb1,preview-mcptk-9-fb2,preview-mcptk-9-fb3',
+      JSON.stringify(stages.map((c) => [c.args.tag, c.args.clip_time])));
+    ok('  frame 0 stands where the game puts it; the rest step to +x by the model width plus half a block, at its yaw',
+      stages[0].args.pos === undefined && stages[1].args.pos.x > 10.5 && stages[1].args.yaw === 170
+      && near(stages[2].args.pos.x - stages[1].args.pos.x, stages[1].args.pos.x - 10.5)
+      && stages[3].args.pos.z === -3.5,
+      JSON.stringify(stages.map((c) => c.args.pos)));
+    ok('  the reply carries a block box around the row and the render yaw that faces it',
+      r.look_at && r.look_at.min.x <= 10 && r.look_at.max.x >= Math.floor(stages[3].args.pos.x) && r.look_at.min.y === 1
+      && r.render && r.render.look_at === r.look_at && r.render.yaw === -10 && r.render.inline === true && r.parse === 'ok',
+      JSON.stringify({ look: r.look_at, render: r.render, parse: r.parse }));
+    ok('  the session slot was swept before the row went up (frame 0 would have stood on the playing preview)',
+      calls[0].tool === 'stage_entity' && calls[0].args.op === 'clear' && calls[0].args.tag === 'preview-mcptk-9', JSON.stringify(calls[0]));
+
+    r = await api({ action: 'clear', bridge: GAME, session: 'mcptk-9' });
+    const swept = calls.filter((c) => c.args.op === 'clear').slice(-5).map((c) => c.args.tag);
+    ok('a clear after a flipbook sweeps the session slot AND every frame tag',
+      r.ok === true && swept.join() === 'preview-mcptk-9,preview-mcptk-9-fb0,preview-mcptk-9-fb1,preview-mcptk-9-fb2,preview-mcptk-9-fb3', JSON.stringify(swept));
+    r = await api({ action: 'clear', bridge: GAME, session: 'mcptk-9' });
+    const again = calls.filter((c) => c.args.op === 'clear').slice(-1).map((c) => c.args.tag);
+    ok('  and the next clear sweeps only the slot: the row is forgotten once swept', again.join() === 'preview-mcptk-9', JSON.stringify(again));
+
+    r = await api({ action: 'flipbook', doc: vocab, model: 'vocab', bridge: GAME, session: 'mcptk-9', force: 'harness: vocab carries a planted overlap' });
+    ok('a flipbook of a model with no clip is refused by name, after nothing was staged',
+      r.ok === false && /flipbook needs a clip and this model has none/.test(r.error) && !calls.slice(-1).some((c) => c.args.op === 'stage'), JSON.stringify(r));
+    r = await api({ action: 'flipbook', doc: fbDoc, model: 'slidey', bridge: GAME, session: 'mcptk-9', clip: 'walk', force: FB_FORCE });
+    ok('  and a clip the model does not have is refused with the ones it has', r.ok === false && /no clip named "walk" \(this model has: slide\)/.test(r.error), JSON.stringify(r));
+    r = await api({ action: 'flipbook', doc: fbDoc, model: 'slidey', bridge: GAME, session: 'mcptk-9', times: [0, 0.5, 1], force: FB_FORCE });
+    ok('explicit times are used as given', JSON.stringify(r.times) === '[0,0.5,1]' && r.frames.length === 3, JSON.stringify(r.times));
+
+    g.fetch = realFetch;
+    delete g.mcptoolkitPush;
+  }
 }
 
 console.log('\n' + (failures ? failures + ' FAILURES' : 'ALL OK'));

@@ -199,6 +199,15 @@ public final class InterpretedScreen extends AbstractContainerScreen<AbstractCon
     }
 
     /**
+     * The file changed under the preview ({@code ui_doc refresh}): re-read it and rebuild, which is
+     * what a window resize does. The caller has checked that no editor is on - this method would
+     * otherwise re-read nothing, by {@link #reload}'s rule.
+     */
+    public void refresh() {
+        rebuildWidgets();
+    }
+
+    /**
      * Adopt a document the editor produced: the destination of an edit is the document
      * (SCREEN_AUTHORING_DESIGN.md section 1), and this is where it lands on screen.
      */

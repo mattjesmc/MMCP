@@ -359,6 +359,16 @@ carry it, and none of them is new toolkit code you have to wait for:
    implementation of a mesh is the one that drifts.
 4. **The review queue** — the section above. An editor's output is exactly the kind of thing that
    ends a design document unlooked-at.
+5. **The disk feed** (0.156.0) — the seam that is *no* seam. With `mmcpd` running, an editor that
+   writes into the project's `src/` gets liveness for nothing: the daemon sees the write and lands
+   it by the right route (asset, data, `.ui.json`, `.java`), and your editor needs no bridge call at
+   all for the round trip. Two consequences worth designing for. **Write the source tree, not the
+   live pack**, wherever you have the choice — a live push is a preview that must be promoted
+   later, while a source write is landed *and* durable. And **if you land a change yourself** —
+   your own command, your own pusher — announce it with `record_edit`, so every other session on
+   that game learns of it from the stream it is already polling instead of from nothing. That tool
+   is the only way into the `edit` event from outside; `ARCHITECTURE.md`, "One log, three
+   consumers", has its field list and its result vocabulary.
 
 ### The conventions, which are conventions and not a framework
 

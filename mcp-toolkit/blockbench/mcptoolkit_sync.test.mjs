@@ -101,14 +101,43 @@ function reset() {
     posts.length = 0;
     nextAnswer = () => ({ ok: true, result: {} });
     for (const k of Object.keys(store)) delete store[k];
-    settings({ bridge: '', bridges: {}, sourceRoot: '', sourceRoots: {} });
+    // The per-project maps MERGE since 0.5.0 (section 4), so `{}` clears nothing; null does, and the
+    // next load reads it back as an empty map.
+    settings({ bridge: '', bridges: null, sourceRoot: '', sourceRoots: null, namespace: '', namespaces: null });
 }
+// The bridge every successful push below is aimed at, and the namespace it needs since 0.5.0.
+const GAME = 'http://127.0.0.1:25640';
+const NS = { namespace: 'mymod' };
+
+// =============================================================================================
+section('0. WHICH NAMESPACE: the shipped default was one mod\'s name, so there is none now');
+// =============================================================================================
+// `villagejobs` was the literal default (isolation record section 13): from any other repo's
+// Blockbench a push landed under assets/villagejobs/ and answered ok. The namespace is REQUIRED,
+// like the bridge, and resolved the same way: per call, per project, then the global setting.
+reset();
+let r = await push({ bridge: GAME });
+ok('a push with no namespace anywhere is refused', r.ok === false && /no namespace for project "beta"/.test(r.error), r);
+ok('...naming the setting to make once', /mcptoolkitPushSettings\(\{namespaces: \{"beta": "mymod"\}\}\)/.test(r.error), r.error);
+ok('...and nothing was posted', posts.length === 0, posts);
+ok('...and the plugin\'s code carries no mod\'s name as a default', !/['"]villagejobs['"]/.test(fs.readFileSync(PLUGIN, 'utf8').split('(function ()')[1]), 'the literal default is back');
+settings({ namespaces: { beta: 'permod' } });
+r = await push({ bridge: GAME });
+ok('a per-project namespace is used', r.ok === true && posts.some((p) => /^assets\/permod\//.test(p.args.path || '')), posts.map((p) => p.args.path));
+reset();
+settings({ namespace: 'globalmod' });
+r = await push({ bridge: GAME });
+ok('the global one is the fallback', r.ok === true && posts.some((p) => /^assets\/globalmod\//.test(p.args.path || '')), posts.map((p) => p.args.path));
+settings({ namespaces: { beta: 'permod' } });
+posts.length = 0;
+r = await push({ bridge: GAME, namespace: 'percall' });
+ok('and an explicit one beats both', r.ok === true && posts.filter((p) => p.args.path).every((p) => /^assets\/percall\//.test(p.args.path)), posts.map((p) => p.args.path));
 
 // =============================================================================================
 section('1. WHICH GAME: no bridge is a refusal, not a plausible default');
 // =============================================================================================
 reset();
-let r = await push({});
+r = await push(NS);
 ok('a live push with no bridge is refused', r.ok === false, r);
 ok('...naming what to pass and what to set', /GAME/.test(r.error) && /mcptoolkitPushSettings/.test(r.error), r.error);
 ok('...and nothing was posted anywhere', posts.length === 0, posts);
@@ -120,7 +149,7 @@ ok('the plugin source carries no hardcoded game port',
     'a literal bridge URL is back in the code');
 
 reset();
-r = await push({ bridge: 'http://127.0.0.1:25640' });
+r = await push({ bridge: 'http://127.0.0.1:25640', ...NS });
 ok('a bridge passed per call is used', r.ok === true, r);
 ok('...as the /cmd endpoint of that origin', posts.every((p) => p.url === 'http://127.0.0.1:25640/cmd'), posts.map((p) => p.url));
 ok('...for the texture and the reload alike',
@@ -132,35 +161,37 @@ for (const [given, want] of [
     ['http://127.0.0.1:25640/cmd', 'http://127.0.0.1:25640/cmd'],
 ]) {
     reset();
-    r = await push({ bridge: given });
-    ok('"' + given + '" normalises to one /cmd', posts[0] && posts[0].url === want, posts[0] && posts[0].url);
+    r = await push({ bridge: given, ...NS });
+    ok('"' + given + '" normalises to one /cmd', posts[0] && posts[0].url === want, posts[0] ? posts[0].url : r);
 }
 
+// `posts[0] &&` throughout: a push refused before it posts leaves the list empty, and a harness
+// that throws on that reports nothing about the checks after it (this file died that way once).
 reset();
 settings({ bridge: 'http://127.0.0.1:25599' });
-r = await push({});
-ok('a stored global bridge is the fallback', posts[0].url === 'http://127.0.0.1:25599/cmd', posts[0].url);
+r = await push(NS);
+ok('a stored global bridge is the fallback', posts[0] && posts[0].url === 'http://127.0.0.1:25599/cmd', posts[0] ? posts[0].url : r);
 settings({ bridges: { beta: 'http://127.0.0.1:25641' } });
 posts.length = 0;
-r = await push({});
+r = await push(NS);
 ok('a per-project bridge beats the global one, because the port NAMES the project',
-    posts[0].url === 'http://127.0.0.1:25641/cmd', posts[0].url);
+    posts[0] && posts[0].url === 'http://127.0.0.1:25641/cmd', posts[0] ? posts[0].url : r);
 posts.length = 0;
-r = await push({ bridge: 'http://127.0.0.1:25642' });
-ok('and an explicit one beats both', posts[0].url === 'http://127.0.0.1:25642/cmd', posts[0].url);
+r = await push({ bridge: 'http://127.0.0.1:25642', ...NS });
+ok('and an explicit one beats both', posts[0] && posts[0].url === 'http://127.0.0.1:25642/cmd', posts[0] ? posts[0].url : r);
 
 // =============================================================================================
 section('2. WHICH PROJECT: an object is used, a name is refused');
 // =============================================================================================
 reset();
-r = await push({ bridge: 'http://127.0.0.1:25640', project: 'alpha' });
+r = await push({ bridge: 'http://127.0.0.1:25640', project: 'alpha', ...NS });
 ok('a project NAME is refused', r.ok === false && /not the name "alpha"/.test(r.error), r);
 ok('...pointing at PROJECT and saying why a name is not enough',
     /PROJECT/.test(r.error) && /ownership check/.test(r.error), r.error);
 ok('...before anything was posted', posts.length === 0, posts);
 
 reset();
-r = await push({ bridge: 'http://127.0.0.1:25640', project: alpha, model: true });
+r = await push({ bridge: 'http://127.0.0.1:25640', project: alpha, model: true, ...NS });
 ok('a project OBJECT is pushed', r.ok === true, r);
 ok('...selected first, because Blockbench works on the active tab', alpha.selected === 1 && g.Project === alpha, alpha.selected);
 ok('...and it is ALPHA\'s textures that were collected, not the tab that was active',
@@ -179,7 +210,7 @@ ok('the summary names the project it acted on', r.project === 'alpha', r);
 reset();
 const realSelect = alpha.select;
 alpha.select = function () { g.Project = this; this.selected++; };
-r = await push({ bridge: 'http://127.0.0.1:25640', project: alpha, model: true });
+r = await push({ bridge: 'http://127.0.0.1:25640', project: alpha, model: true, ...NS });
 alpha.select = realSelect;
 ok('the project OBJECT is what is read, not the globals the tab switch happens to set',
     r.ok === true && posts.some((p) => /alpha_tex\.png$/.test(p.args.path || ''))
@@ -189,14 +220,14 @@ ok('...its codec too', r.ok === true
     posts.map((p) => p.args.path));
 
 reset();
-r = await push({ bridge: 'http://127.0.0.1:25640' });
+r = await push({ bridge: 'http://127.0.0.1:25640', ...NS });
 ok('with no project the ACTIVE one is used and named', r.ok === true && r.project === 'beta', r);
 
 // =============================================================================================
 section('3. what did not change');
 // =============================================================================================
 reset();
-r = await push({ target: 'source', project: alpha });
+r = await push({ target: 'source', project: alpha, ...NS });
 ok('target:source still refuses without a sourceRoot', r.ok === false && /sourceRoot/.test(r.error), r);
 ok('...and does NOT ask for a bridge it has no use for', !/bridge/.test(r.error), r.error);
 
@@ -210,17 +241,51 @@ ok('...and lands the file where the sourceRoot says',
 ok('...with the bridge left null in the summary', r.bridge === null, r);
 
 reset();
-r = await push({ bridge: 'http://127.0.0.1:25640', only: ['nope'] });
+r = await push({ bridge: 'http://127.0.0.1:25640', only: ['nope'], ...NS });
 ok('a texture that is not in the project is still refused by name',
     r.ok === false && /nope/.test(r.error), r);
 
 reset();
 nextAnswer = () => ({ ok: false, error: 'no game there' });
-r = await push({ bridge: 'http://127.0.0.1:25640' });
+r = await push({ bridge: 'http://127.0.0.1:25640', ...NS });
 ok('a refusing bridge RESOLVES as {ok:false} rather than rejecting (it would wedge risky_eval)',
     r.ok === false && /no game there/.test(r.error), r);
 ok('and the last summary is mirrored for a caller that cannot await',
     g.mcptoolkitLastPush && g.mcptoolkitLastPush.ok === false, g.mcptoolkitLastPush);
+
+// =============================================================================================
+section('4. an explicit null is refused, target is checked, and a settings patch merges');
+// =============================================================================================
+// The refuse-on-null rule of 0.140.0 held for an ABSENT key and not for the `GAME` an agent
+// dutifully passes when it is null (isolation record section 13): `bridge: null` fell through to
+// the stored URL - whichever game somebody typed in last - and `project: null` to the active tab,
+// a project the caller had just been told does not exist.
+reset();
+settings({ bridge: 'http://127.0.0.1:25599' });
+r = await push({ bridge: null, ...NS });
+ok('`bridge: null` is refused, not resolved from the store', r.ok === false && /bridge is null/.test(r.error), r);
+ok('...saying that GAME is null because the shim never said, and what to pass instead', /GAME is null/.test(r.error) && /ping/.test(r.error) && /mcptoolkitPushSettings\(\{bridges:/.test(r.error), r.error);
+ok('...and nothing was posted to the stored game', posts.length === 0, posts);
+reset();
+r = await push({ bridge: GAME, project: null, ...NS });
+ok('`project: null` is refused, not resolved to the active tab', r.ok === false && /project is null/.test(r.error) && /PROJECT is null because no project is open/.test(r.error), r);
+ok('...before anything was posted', posts.length === 0, posts);
+ok('...and beta, the active tab, was not selected on the way', beta.selected === 0, beta.selected);
+// `target` was never validated, so `target:'game'` pushed nothing and answered `ok:true, pushed:N`.
+reset();
+r = await push({ bridge: GAME, target: 'game', ...NS });
+ok('an unknown `target` is refused with the three values', r.ok === false && /target must be one of live \| source \| both, not "game"/.test(r.error), r);
+ok('...and nothing was posted, nothing answered pushed', posts.length === 0 && r.pushed === undefined, { posts, r });
+// A headless settings patch REPLACED whole per-project maps where the dialog had always merged.
+reset();
+settings({ bridges: { x: 'http://127.0.0.1:1' } });
+const merged = settings({ bridges: { y: 'http://127.0.0.1:2' } });
+ok('a second per-project bridge keeps the first: the maps merge', merged.bridges.x === 'http://127.0.0.1:1' && merged.bridges.y === 'http://127.0.0.1:2', merged.bridges);
+settings({ namespaces: { x: 'a' } });
+settings({ sourceRoots: { x: 'C:/a' } });
+const all = settings({ namespaces: { y: 'b' } });
+ok('...for every per-project map, and a patch to one leaves the others alone', all.namespaces.x === 'a' && all.namespaces.y === 'b' && all.sourceRoots.x === 'C:/a' && all.bridges.x === 'http://127.0.0.1:1', all);
+ok('...and it is what the store holds, not only what was answered', JSON.parse(store[Object.keys(store)[0]]).bridges.x === 'http://127.0.0.1:1', store);
 
 console.log('\n' + (failures ? failures + ' FAILED of ' + count : 'all ' + count + ' ok'));
 process.exit(failures ? 1 : 0);

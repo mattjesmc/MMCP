@@ -3,6 +3,8 @@
 What is actually running when an agent modifies your game, and the handful of ideas that make its
 answers trustworthy. Four things to understand: the **bridge** in the game, the **shim** outside it,
 the **mechanism** stamp on every reply, and the **profile** that decides what a session can see.
+There are now three ways in and one of them is a plain file write; the first two sections say which
+is which.
 
 Read this once and most of the rest of the wiki stops needing explanation. It is about ten minutes.
 
@@ -10,6 +12,7 @@ Read this once and most of the rest of the wiki stops needing explanation. It is
 
 - [The shape: two processes, one door](#the-shape-two-processes-one-door)
 - [Why the split is that way](#why-the-split-is-that-way)
+- [Three doors, and a route with no door](#three-doors-and-a-route-with-no-door)
 - [Mechanism](#mechanism)
 - [Coverage: reads that admit what they missed](#coverage-reads-that-admit-what-they-missed)
 - [Profiles: what a session can see, and why it is not everything](#profiles-what-a-session-can-see-and-why-it-is-not-everything)
@@ -57,11 +60,41 @@ The rest of what lives shim-side is there because it is **per-session policy**: 
 surface you get, what memory this agent has, what a screenshot costs. None of that is the game's
 business, and a second session on the same game can have different answers.
 
-One consequence worth stating because people ask: **the bridge port cannot itself be an MCP endpoint
-that carries a profile.** The port serves the whole manifest over a private API; the profile belongs
-to the shim process a session starts. Making the port an MCP endpoint would mean putting an MCP
-server in the JVM and moving profile slicing into Java with it, and the shim-side layers — memory,
-Blockbench, local tools — would not come along.
+That was the whole story until 0.146.0, and the shape above is still the supported path. What
+changed since is the next section.
+
+## Three doors, and a route with no door
+
+The split above answers one question — *what does a client spawn when the game is not running* —
+and the answers have accumulated. All three doors reach the same tools; they differ in what else
+comes with them.
+
+| | **The shim** (stdio) | **The game's own door** (0.146.0) | **The daemon** (0.156.0) |
+|---|---|---|---|
+| You register | a command and its environment | a URL: `http://127.0.0.1:<port>/mcp` | a URL: `http://127.0.0.1:25500/mcp/<project>` |
+| Your client spawns | one process per session | nothing | nothing |
+| Needs Node | yes | **no** — it is in the jar | yes, but only the daemon's |
+| Alive when the game is down | yes, honestly serving local tools | no — it *is* the game | yes |
+| Profile | `MCPTK_PROFILE` | the URL: `/mcp/<surface>` | the URL: `?profile=<p>` |
+| Memory, Blockbench, the loop kit | yes | **no** | yes |
+
+**The game's own door** exists for the case where installing anything is the obstacle: a launcher
+install, someone else's machine, a client that only speaks HTTP. Type `/mmcp mcp` in game and it
+prints its own address and the surfaces it is serving right now. The trade is stated in the
+table — it exists only while the game does, and the shim-side layers are not behind it. (This is
+the answer to a question that used to be in this section as an impossibility: *can the port carry a
+profile itself?* It can, by putting an MCP server in the JVM and slicing by mechanism in Java,
+which is what was built.)
+
+**The daemon** answers the other half. One process per machine hosts every project: registration is
+a URL, nothing is spawned by your client, and one place owns which game is which, where memory
+lives, and which Blockbench a session works in. The shim is not replaced — the daemon spawns one
+per session, because each shim's layers keep their state in module scope.
+
+**And the route with no door.** The daemon also watches each registered project's `src/`, so a file
+you save is landed in the running game with nothing called at all, and every change is a row on a
+feed both you and the agent can read. That is [the change
+loop](the-change-loop.md#the-shortest-route-write-the-file), and it is the part most worth having.
 
 ## Mechanism
 
@@ -74,7 +107,7 @@ This is the idea that does the most work in the whole system, and it is one fiel
 | `observe` | It read the game. Nothing changed. | `describe_box`, `get_screen`, `query_registry`, `get_log`, `roll_loot` |
 | `world_edit` | A direct server edit. Instant, mass-effect, previewable, **undoable**. | `set_blocks`, `place_shapes`, `place_structure` |
 | `embodied` | A body did it. Respects reach. **Can fail physically.** | `bot_goto`, `bot_mine`, `bot_place`, `bot_craft` |
-| `privileged` | Arbitrary authority. Audited on every call. | `run_command`, `hotswap_class`, `push_asset`, `push_data`, `capture_structure` |
+| `privileged` | Arbitrary authority. Audited on every call. | `run_command`, `hotswap_class`, `push_asset`, `push_data`, `capture_structure`, `record_edit` |
 | `local` | Never touched the game at all. | `mem_*`, the loop kit |
 
 The point is that these are **never conflated**. "Clear these trees" done by a bot mining them and
@@ -132,9 +165,12 @@ roll call. More than one can be attached to one game at a time.
 
 That matters in two directions. It is how you run a second agent on the same world without them
 tripping over each other's tool surfaces — each shim process holds its own profile and its own
-memory. And it is why some tools take ownership of a subject: the Blockbench bridge binds a project
-to a session so another session's edit to it is refused, because two agents editing one model is not
-a merge conflict, it is a lost afternoon.
+memory. Sessions are not sealed off from each other, though: an edit that lands in the game — from
+the file watcher, or announced by hand with `record_edit` — becomes an `edit` event that *every*
+session on that game can read with `get_events`, which is how a second agent finds out about a
+change nobody told it about. And it is why some tools take ownership of a subject: the Blockbench
+bridge binds a project to a session so another session's edit to it is refused, because two agents
+editing one model is not a merge conflict, it is a lost afternoon.
 
 ## Dev and production
 

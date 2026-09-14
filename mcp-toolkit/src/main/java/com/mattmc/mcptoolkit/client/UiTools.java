@@ -172,32 +172,60 @@ public final class UiTools {
     private static CompletableFuture<JsonElement> screenshot(final com.mattmc.mcptoolkit.ToolContext ctx,
                                                              final JsonObject a) {
         Minecraft mc = Minecraft.getInstance();
-        var target = mc.gameRenderer.mainRenderTarget();
         CompletableFuture<JsonElement> out = new CompletableFuture<>();
-        // The callback fires on a later render frame; complete the future from there. Never block here.
-        net.minecraft.client.Screenshot.takeScreenshot(target, image -> {
-            try (image) {
-                int width = image.getWidth();
-                int height = image.getHeight();
-                Path tmp = Files.createTempFile("mcptk-shot", ".png");
-                try {
-                    image.writeToFile(tmp);
-                    byte[] png = Files.readAllBytes(tmp);
-                    JsonObject r = new JsonObject();
-                    JsonObject img = new JsonObject();
-                    img.addProperty("mimeType", "image/png");
-                    img.addProperty("base64", Base64.getEncoder().encodeToString(png));
-                    r.add("_image", img);
-                    r.addProperty("width", width);
-                    r.addProperty("height", height);
-                    out.complete(r);
-                } finally {
-                    Files.deleteIfExists(tmp);
-                }
-            } catch (Exception e) {
-                out.completeExceptionally(e);
+        // A LOADING OVERLAY IS NOT THE GAME. The first live entity-loop run (2026-09-13) took a
+        // screenshot 281 ms after a push whose last act is a resource reload, and got the Mojang
+        // splash with its progress bar two thirds along - a true picture of the framebuffer and a
+        // lie about the world, sent to a model that had just been told the entity was standing in
+        // front of it. While an overlay is up, the frame is the overlay: wait for it to clear
+        // (bounded, so a reload that never finishes still answers), then capture, and say how long
+        // the wait was so the reply carries the fact rather than hiding it.
+        final long started = System.currentTimeMillis();
+        final long deadline = started + 20_000L;
+        final Runnable[] attempt = new Runnable[1];
+        attempt[0] = () -> {
+            if (mc.gui.overlay() != null && System.currentTimeMillis() < deadline) {
+                CompletableFuture.delayedExecutor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    .execute(() -> mc.execute(attempt[0]));
+                return;
             }
-        });
+            final long waited = System.currentTimeMillis() - started;
+            final boolean overlayStill = mc.gui.overlay() != null;
+            var target = mc.gameRenderer.mainRenderTarget();
+            // The callback fires on a later render frame; complete the future from there. Never block here.
+            net.minecraft.client.Screenshot.takeScreenshot(target, image -> {
+                try (image) {
+                    int width = image.getWidth();
+                    int height = image.getHeight();
+                    Path tmp = Files.createTempFile("mcptk-shot", ".png");
+                    try {
+                        image.writeToFile(tmp);
+                        byte[] png = Files.readAllBytes(tmp);
+                        JsonObject r = new JsonObject();
+                        JsonObject img = new JsonObject();
+                        img.addProperty("mimeType", "image/png");
+                        img.addProperty("base64", Base64.getEncoder().encodeToString(png));
+                        r.add("_image", img);
+                        r.addProperty("width", width);
+                        r.addProperty("height", height);
+                        // Only a real wait is worth a field: the no-overlay path measures its own
+                        // few milliseconds of scheduling, which is not a fact about the game.
+                        if (waited >= 50L) {
+                            r.addProperty("waited_for_overlay_ms", waited);
+                        }
+                        if (overlayStill) {
+                            r.addProperty("overlay", "a loading overlay was still up after 20 s - this frame is the overlay, not the world");
+                        }
+                        out.complete(r);
+                    } finally {
+                        Files.deleteIfExists(tmp);
+                    }
+                } catch (Exception e) {
+                    out.completeExceptionally(e);
+                }
+            });
+        };
+        attempt[0].run();
         return out;
     }
 
@@ -1145,6 +1173,39 @@ public final class UiTools {
             }
 
             @Override
+            public java.util.concurrent.CompletableFuture<JsonObject> refresh(final java.nio.file.Path resolvedFile) {
+                return onClient(() -> {
+                    JsonObject o = new JsonObject();
+                    Screen screen = Minecraft.getInstance().gui.screen();
+                    if (!(screen instanceof InterpretedScreen is)) {
+                        o.addProperty("refreshed", false);
+                        o.addProperty("open", screen == null ? "no screen" : screen.getClass().getName());
+                        return o;
+                    }
+                    java.nio.file.Path showing = fileOf(is.source());
+                    if (showing == null || !showing.equals(resolvedFile)) {
+                        o.addProperty("refreshed", false);
+                        o.addProperty("open", is.source().describe());
+                        return o;
+                    }
+                    if (is.editorMode() != null) {
+                        // A clean editor: nothing to lose, but the editor holds the document while it
+                        // is on and a rebuild would re-read nothing (InterpretedScreen.reload).
+                        o.addProperty("refreshed", false);
+                        o.addProperty("open", is.source().describe() + " (in the editor - Ctrl+G out of it to follow the file)");
+                        return o;
+                    }
+                    is.refresh();
+                    o.addProperty("refreshed", true);
+                    o.addProperty("open", is.source().describe());
+                    if (is.loadError() != null) {
+                        o.addProperty("load_error", is.loadError());
+                    }
+                    return o;
+                });
+            }
+
+            @Override
             public String unsavedHold(final java.nio.file.Path resolvedFile) {
                 // Two field reads off the open screen, from the HTTP thread. Nothing is mutated and
                 // a stale answer is the safe one either way: the editor could always save a moment
@@ -1161,6 +1222,19 @@ public final class UiTools {
                 return "the in-game editor has " + is.source().describe() + " open with unsaved edits.";
             }
         };
+
+    /** The file a preview's source resolves to on disk (the SOURCE TREE for a resource id), or null. */
+    private static java.nio.file.@Nullable Path fileOf(final UiSource source) {
+        try {
+            return switch (source) {
+                case UiSource.File f -> f.path().toAbsolutePath().normalize();
+                case UiSource.Res r -> com.mattmc.mcptoolkit.ui.UiSaveTarget.resolve(r.screen()).file()
+                    .toAbsolutePath().normalize();
+            };
+        } catch (java.io.IOException e) {
+            return null;
+        }
+    }
 
     /**
      * Run a screen operation on the client thread and hand back its JSON. Every one of {@code ui_doc}'s

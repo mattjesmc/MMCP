@@ -14,7 +14,7 @@ plugins {
 // THE CHANGELOG IS CHANGELOG.md (moved out of this file 2026-09-06, RELEASE_1.md section G):
 // one `## x.y.z` section per version, newest first. Every version bump here gets its entry there.
 
-version = '0.146.0'
+version = '0.157.0'
 group = 'com.mattmc.mcptoolkit'
 
 base {
@@ -192,6 +192,18 @@ processResources {
         expand version: project.version.toString()
     }
 
+    // THE DIST MANIFEST SAYS WHICH SHIM THIS IS, and it is derived rather than typed because the
+    // hand-maintained one had been frozen at 0.13.0 since the shim actually WAS 0.13.0 - sixty-one
+    // versions. That is the same defect as the one BLOCKBENCH_ISOLATION_DESIGN.md section 12 is
+    // about: a consumer runs an EXTRACTED COPY, and the only way anyone tells which code they have
+    // is what that copy says about itself. The version comes from the shim's own package.json, not
+    // from `project.version`: they are two release lines and the extracted server is the shim.
+    def shimVersion = new groovy.json.JsonSlurper().parse(file('../mcp-server/package.json')).version
+    inputs.property('shimVersion', shimVersion)
+    filesMatching('mcp-server-dist/package.json') {
+        expand shimVersion: shimVersion
+    }
+
     // Bundle the Node MCP server for runtime extraction (client ClaudeBootstrap). Slim on purpose:
     // no ablation/companion harnesses, no probes, no node_modules, no repo package.json — a slim
     // dist package.json lives in src/main/resources/mcp-server-dist/ beside the copied sources.
@@ -208,8 +220,13 @@ processResources {
         // upstream/blockbench.mjs: index.mjs has imported it since 0.108.0 and it was NEVER in this
         // list - the exact failure the comment above describes, found while adding the next three.
         // image/ (the PNG codec and the budget) and loop/ (the project loop file) are 0.122.0's.
-        include 'index.mjs', 'bridge-base.mjs', 'memory/*.mjs', 'local/*.mjs', 'ablation/view.mjs',
-            'upstream/*.mjs', 'image/*.mjs', 'loop/*.mjs'
+        // blockbench-profiles.mjs (0.155.0) is imported by index.mjs AND daemon/blockbench.mjs;
+        // daemon.mjs + daemon/ are mmcpd (HOST_DESIGN.md), the other entry point of the same dist;
+        // daemon/ui/ is the cockpit it serves at /ui/ (0.157.0) - pages, not modules, so the import
+        // walk in BundledResourcesTest cannot notice them missing; the daemon probe fetches one.
+        include 'index.mjs', 'bridge-base.mjs', 'blockbench-profiles.mjs', 'memory/*.mjs', 'local/*.mjs',
+            'ablation/view.mjs', 'upstream/*.mjs', 'image/*.mjs', 'loop/*.mjs', 'daemon.mjs', 'daemon/*.mjs',
+            'daemon/ui/*'
         exclude 'memory/probes/**'
     }
 
@@ -283,6 +300,10 @@ loom {
             // hotswap_class self-attaches a java agent for Instrumentation; the JVM refuses
             // self-attach without this.
             vmArg '-Djdk.attach.allowAttachSelf=true'
+            // Mixin builds its own hot-swap agent at startup IF this is set, and reads it exactly
+            // once - a game started without it cannot be given the agent later. It is what makes
+            // swapping a MIXIN re-apply it to its targets (docs/platform/HOTSWAP_CEILING.md 1).
+            vmArg '-Dmixin.hotSwap=true'
             if (bridgePort) {
                 vmArg "-Dmcptoolkit.port=${bridgePort}"
             }
@@ -315,6 +336,7 @@ loom {
         }
         server {
             vmArg '-Djdk.attach.allowAttachSelf=true'
+            vmArg '-Dmixin.hotSwap=true'
             if (bridgePort) {
                 vmArg "-Dmcptoolkit.port=${bridgePort}"
             }

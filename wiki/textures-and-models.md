@@ -155,6 +155,15 @@ every tab, its holder and the live sessions.
 
 Every call is queued, so two sessions never interleave inside the app.
 
+**If you run the daemon, none of the above happens to you.** A session that comes in through
+`mmcpd` gets a **Blockbench process of its own** rather than a window out of the shared app —
+`Blockbench.exe --userData ~/.mmcp/bb/<session>`, seeded from a template of your own profile and
+spawned the first time that session actually calls a Blockbench tool, so a `modding` session never
+pays for one. Its plugin runs *owned*: it binds the port it was handed, it does not join the dock,
+and only its owner can claim it. A clean instance dies with the session; one with unsaved work is
+kept and listed as orphaned. The window machinery above is the stdio path's, and it is unchanged
+there.
+
 ## Promotion
 
 The live pack is a preview surface, not a home.

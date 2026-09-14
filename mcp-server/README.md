@@ -39,6 +39,49 @@ npm install
 
 ## Register with Claude Code
 
+Two ways. **Through the daemon** (`mmcpd`, 0.79.0; `../mcp-toolkit/docs/platform/HOST_DESIGN.md`):
+one process hosts every session, the client spawns nothing, and the registration is a URL:
+
+```
+node mcp-server/daemon.mjs add <project root>        # once per project; reads mcmod.port
+node mcp-server/daemon.mjs serve                     # keep running (a login task, later)
+claude mcp add --transport http mmcp http://127.0.0.1:25500/mcp/<project>            # default profile
+claude mcp add --transport http mmcp http://127.0.0.1:25500/mcp/<project>?profile=art
+```
+
+The daemon spawns this shim per session with the project's env and cwd (`daemon/session.mjs`),
+keeps memory at `~/.mmcp/memory/<project>`, and gives a session that models a Blockbench instance
+of its own (`daemon/blockbench.mjs`, `--userData`, spawned on first use). `node daemon.mjs
+status|projects|sessions|kick <id>|profile <id> <p>|blockbench` read and drive it;
+`probes/daemon.test.mjs` is its check and needs no game.
+
+The daemon also WATCHES every registered root (`daemon/watcher.mjs`, the disk feed of the
+co-editing contract): a file written under `src/` - by an agent's `Write`, an editor, a texture
+tool, a checkout - is landed in the running game with no tool called. Textures, models, sounds and
+lang go through `push_asset` + one `reload_resources` per batch; `data/` through `push_data` +
+`reload_data` (needs a world); a `.ui.json` through `ui_doc refresh`; `.java` through
+`hotswap_class {compile:true}`, one compile for the batch. Every change is a row on the change feed
+(`node daemon.mjs changes [--follow] [--project p]`, `GET /changes` as JSON or SSE) and an `edit`
+event in the game's `get_events`, saying what became of it: `swapped`, `refused` (identical bytes,
+a tool's own refusal), `not-yet` (a Java file that does not compile yet), `pending-rebuild` (a new
+class, a structural change, `fabric.mod.json`), `none` (the game is down, or nothing lands that
+kind). `MMCPD_WATCH=0` turns it off; `probes/watcher.test.mjs` is its check, against a fake game.
+
+The daemon also serves **the cockpit** at `http://127.0.0.1:25500/ui/` (`daemon/ui/`, plain pages,
+no framework; `node daemon.mjs ui` prints the URL): every registered project with its state and
+MCP URL, **Launch / Rebuild & launch / Stop** per project with the cycle's phase and output tailed
+live, the game's `latest.log`, the sessions with a profile switch and kick, the change feed live,
+the Blockbench instances. Under it the supervisor (`daemon/supervisor.mjs`): `POST
+/projects/<n>/run|stop` spawns the workbench's `tools/rebuild.ps1` exactly as `launch_game` does
+and keeps its output in the daemon (`GET /projects/<n>/log` as JSON or SSE, `/runs` the history,
+`/latest` the game log); `node daemon.mjs run <name> [--target server] [--no-rebuild] [--takeover]`
+starts and follows a cycle, `stop-game <name>`, `runs <name>`, `log <name> [--follow]`. A daemon
+run from an extracted dist has no `tools/rebuild.ps1` and refuses a run with the reason; the rest
+of the page works. `probes/supervisor.test.mjs` is its check, against a fake script;
+`../tools/cockpit-shot.mjs` screenshots a tab so an agent can look at the page.
+
+**Directly** (stdio, what release 2 documents and what a machine without the daemon uses):
+
 ```
 claude mcp add mcp-toolkit -- node <abs path to this checkout>/mcp-server/index.mjs
 ```

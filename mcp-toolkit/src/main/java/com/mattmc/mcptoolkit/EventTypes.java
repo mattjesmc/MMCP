@@ -217,6 +217,17 @@ public final class EventTypes {
                 + "nothing. Deduped per message and capped per window (`repeats`/`flood_suppressed` "
                 + "say how many it stands for); read the full lines with get_log {since: seq-1}. "
                 + "NOT delivered to player-legal sessions — a body perceives the world, not stderr"),
+        // The co-editing contract's event (HOST_DESIGN.md section 4.5). The DAEMON writes it, through
+        // record_edit, after it landed (or failed to land) a change it saw on disk: the agent that
+        // wrote the file with its own editor learns what happened to it without calling a tool,
+        // and a human's edit reaches the agent by the same row. `live` is the act's verdict in the
+        // watcher's vocabulary, never a guess: `swapped` means the game was changed.
+        new Line("BUILD", new String[] {"edit"},
+            "{project, path, by: {kind}, feed: disk|buffer|undo, op: create|write|delete, hunk, live: {act, "
+                + "result: swapped|refused|not-yet|pending-rebuild|none, ms, error}} - a FILE IN THE "
+                + "PROJECT CHANGED and the daemon landed it in this game (or could not: `result` and "
+                + "`error` say why). Your own Write shows up here too, with what the game made of it. "
+                + "`hunk` is a few lines of diff, enough to know WHAT changed without re-reading"),
         new Line("AUDIT", new String[] {"audit"},
             "every world_edit/privileged call, success or failure, with compacted args. NOT delivered "
                 + "to player-legal sessions — a body perceives the world, not the server's ledger"),

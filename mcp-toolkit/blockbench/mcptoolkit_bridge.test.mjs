@@ -28,7 +28,15 @@ import { createRequire } from 'node:module';
 import { encodePng, decodePng } from '../../mcp-server/image/png.mjs';
 
 const HERE = path.dirname(url.fileURLToPath(import.meta.url));
-const PLUGIN = path.join(HERE, 'mcptoolkit_bridge.js');
+// MCPTK_PLUGIN_PATH points the harness at ANOTHER copy of the plugin - the one from the previous
+// release, extracted with `git show HEAD:...` - which is how a new check is proved to be a falsifier
+// (isolation record 12.8, 13.3): it must go red there and green here, or it tests nothing.
+const PLUGIN = process.env.MCPTK_PLUGIN_PATH ? path.resolve(process.env.MCPTK_PLUGIN_PATH) : path.join(HERE, 'mcptoolkit_bridge.js');
+// The shipped range of a REAL Blockbench (25801 and the fifteen ports above it). A harness that
+// scans it registers test processes in the developer's own dock (seen 2026-09-12), so every
+// outbound request the plugin makes from this world is refused there - whichever plugin version is
+// loaded, since the older ones folded port 0 to that base (`scanBase`).
+const REAL_RANGE = /^https?:\/\/(127\.0\.0\.1|localhost):258(0[1-9]|1[0-6])(\/|$)/i;
 const FIXTURE = path.join(HERE, '..', '..', 'mcp-server', 'probes', 'fixtures', 'blockbench-bridge-2026-09-07.json');
 const WRITE_FIXTURE = process.argv.includes('--write-fixture');
 
@@ -213,8 +221,12 @@ function world() {
     Object.assign(g, {
         console, setTimeout, clearTimeout, setInterval, clearInterval, Buffer, Promise,
         // The window counts its neighbours the way a shim does, over http, because a renderer has no
-        // other view of them (`otherWindowsAnswer`).
-        fetch, AbortSignal, URL,
+        // other view of them (`otherWindowsAnswer`). Guarded: a test must not be able to appear in
+        // the app it is testing.
+        fetch: (u, o) => (REAL_RANGE.test(String(u))
+            ? Promise.reject(new Error('refused by the harness: ' + u + ' is in the real Blockbench range'))
+            : fetch(u, o)),
+        AbortSignal, URL,
         localStorage: { _: {}, getItem(k) { return k in this._ ? this._[k] : null; }, setItem(k, v) { this._[k] = v; } },
         // `title` is what the ownership prefix is written onto; `querySelector` answering null is a
         // renderer with no <title> node, which makes `watchTitle` a no-op and leaves the prefix itself
@@ -276,10 +288,27 @@ function world() {
         },
         // `close` is what an agent-born window calls on itself once nothing needs it. Counted rather
         // than acted on: there is no window here to go away.
-        window: { onbeforeunload: null, close() { g._closed = (g._closed || 0) + 1; } },
+        // `listeners` records what the plugin subscribes to: the `storage` event is the one
+        // cross-window channel settings have (section 13), and a listener that is never registered
+        // is a design that only works in the harness, where the event is dispatched by hand.
+        window: {
+            onbeforeunload: null, close() { g._closed = (g._closed || 0) + 1; },
+            listeners: {},
+            addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+            removeEventListener(type, fn) { const l = this.listeners[type] || []; const i = l.indexOf(fn); if (i >= 0) l.splice(i, 1); },
+        },
         Plugin: { register(id, def) { g.__plugin = def; } },
-        Action: class { constructor(id, o) { this.id = id; this.o = o; } delete() {} },
-        MenuBar: { addAction() {} },
+        // `setName` and `children` are the two parts of the real Action the menu work depends on,
+        // both checked in the running app (5.1.6): `setName` is on Action.prototype, and an Action
+        // with a `children` array is what Blockbench nests a submenu under.
+        Action: class {
+            constructor(id, o) { this.id = id; this.o = o; this.name = o && o.name; this.children = o && o.children; }
+            setName(n) { this.name = n; if (this.o) this.o.name = n; }
+            delete() {}
+        },
+        // Records what was registered and where, because "one entry in Tools, not seven" is a claim
+        // about this call and nothing else can see it (section 12.5).
+        MenuBar: { added: [], addAction(a, path) { this.added.push({ id: a.id, path, children: a.children ? a.children.length : 0 }); } },
         Dialog: class { constructor(o) { this.o = o; } show() {} },
         requireNativeModule(name, opts) { g._asked = (g._asked || []).concat([{ name, prompt: opts && opts.show_permission_dialog }]); if (name === 'process' && g._grant) return { getBuiltinModule: (m) => (m === 'http' ? http : null), versions: process.versions }; return undefined; },
         Outliner: { get root() { return g.Project ? g.Project.root : []; }, get elements() { return g.Project ? g.Project.elements : []; }, selected: [] },
@@ -1082,6 +1111,10 @@ api.settings({ shared_port: null });
 // refusals below are the whole of the safety: a window with work in it, a window somebody holds, and
 // the LAST window, which cannot go because closing it would quit the app.
 const openProjects = g.ModelProject.all.slice();
+// This section's earlier phase already asked for a window as W1, and since 0.10.0 one session gets
+// one new window per `birth_ms` (section 12.4). A real session would have waited that out; here the
+// ask is forgotten, because what this phase is about is the END of a window and not the ask.
+api.forgetAsk('win-1');
 api.settings({ empty_grace_ms: 60 });
 api.stop();
 api.start({ prompt: false });
@@ -1327,7 +1360,652 @@ api.settings({ dock_port: null, beat_stale_ms: null, reach_ms: null, birth_ms: n
 api.stop();
 
 // =============================================================================================
-section('14. the crash-recovery guard: quitting takes only the backups of this window');
+section('14. what a person can see and press, the limit the plugin keeps, and a claim gone idle');
+// =============================================================================================
+// BLOCKBENCH_ISOLATION_DESIGN.md section 12, from a report on 2026-09-12: eight windows two days
+// after the work they were opened for, none with a project, no controls anywhere, and the dock
+// running the whole time with a complete roster nobody could see.
+//
+// Three findings, each with its own test below. (1) A PANEL is invisible in exactly the state the
+// dock lives in - measured in the running app, 544x93 with a project open and 0x0 without, the
+// start screen covering the workspace - so what a person is shown has to be a start-screen section,
+// and what it SAYS is assertable here even though the DOM it paints into is not. (2) A claim held
+// by a session that has done nothing for two days kept an empty window alive, because the only
+// question asked of it was whether its socket was open. (3) The demanding shims were pinned to an
+// older toolkit and could not be fixed from the shim at all, so the reuse and the ceiling have to
+// live in the plugin, on `POST /window`.
+const spick = await pickBase(8);
+const sbase = spick.base;
+ok('a free span for the surfaces', !!sbase && !!spick.squatter, sbase);
+await new Promise((r) => spick.squatter.close(r));
+api.settings({ port: sbase, dock_port: null, reach_ms: 400, dock_scan_ms: 600000, empty_grace_ms: 60, idle_claim_ms: 250 });
+api.start({ prompt: false });
+await sleep(200);
+const SPORT = api.status().port;
+ok('the bridge is listening on the base of a clean span', SPORT === sbase && api.status().listening === true, api.status());
+// Section 13 left this window standing as a dock, and a dock has no other role to be given; its
+// stub-window factory goes too, so an ask here does not try to bind a port that stub still holds.
+api.resignDock(null);
+g._openStubWindow = null;
+api.setRole('agent');
+ok('...as an agent window, which is the kind this section is about', api.window().agent === true, api.window());
+
+// --- A CLAIM THAT IS LIVE AND IDLE ----------------------------------------------------------
+// The two-day windows were every one of them `connected: true`. A presence socket is the liveness
+// of a PROCESS; it says nothing about whether anybody is working here.
+let scl = await jpost(SPORT, '/claim', { session: { id: 'idle-1', client: 'shim-idle' } });
+ok('a fresh claim is not idle: its clock starts at the claim', scl.ok === true && api.claimIdle().idle === false && api.claimIdle().limit_ms === 250, api.claimIdle());
+await sleep(320);
+let shi = await jget(SPORT, '/hello');
+ok('a claim that has asked for nothing goes IDLE while its holder is still connected', api.claimIdle().idle === true && shi.claimed_by && shi.claimed_by.idle === true && shi.claimed_by.idle_s >= 0, shi.claimed_by);
+// A window with work in it is never judged by its claim: that rule is what keeps an idle socket
+// from becoming a reason to close something unsaved (design section 6.2).
+ok('...but a window with a project open keeps its holder, idle or not', g.ModelProject.all.length > 0 && shi.claimed_by.session === 'idle-1' && (await api.sweep()) === null, g._closed);
+// One call is all it takes to be working again, and it is the CALL that counts: `seen` is refreshed
+// by presence and by every scan, so it could never have answered this question.
+await jpost(SPORT, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'idle-1' } });
+ok('a call by the holder puts the claim back to work', api.claimIdle().idle === false && api.claimIdle().idle_ms < 250, api.claimIdle());
+await sleep(320);
+// Now the shape the report was about: empty, held, and idle. The claim is dropped, which is what
+// makes the window reusable rather than merely closeable.
+const sOpen = g.ModelProject.all.slice();
+g.ModelProject.all.length = 0;
+g.Project = null;
+shi = await jget(SPORT, '/hello');
+ok('an EMPTY window whose holder has gone quiet is released: the claim stops protecting it', shi.claimed_by === null && api.window().claimed_by === null, shi);
+const sneighbour = await stubWindow(sbase + 5, { window: 'win-else', role: 'person' });
+const closedBefore = g._closed || 0;
+await api.sweep();
+await sleep(90);
+ok('...and with another window answering, the window it was holding closes itself', (await api.sweep()) === true && g._closed === closedBefore + 1, g._closed);
+api.start({ prompt: false });
+await sleep(200);
+api.setRole('agent');
+
+// --- WHAT THE START SCREEN SAYS -------------------------------------------------------------
+// The model is the assertable half: what a person is shown, and what each button will do. (The DOM
+// it paints into needs a renderer; the live spike is what proved that half - 1000x211 with no
+// project open, topmost and hit-testable.)
+let scr = api.startScreen();
+ok('an ordinary window says which window it is, in a window that has no project to show a panel in',
+    scr.heading === 'MCP Toolkit Bridge' && scr.rows.length === 1 && scr.rows[0].self === true
+    && scr.rows[0].lines[0].indexOf('port ' + api.status().port) === 0, scr.rows[0]);
+ok('...and offers the two acts a person in front of a blank window wants: find the dock, or close this one',
+    scr.rows[0].buttons.map((b) => b.label).join('|') === 'Open the MCP Dock|Close this window', scr.rows[0].buttons.map((b) => b.label));
+api.settings({ dock_port: sbase + 5 });
+scr = api.startScreen();
+ok('...and when a dock is already known it offers to RAISE it rather than make a second one',
+    scr.rows[0].buttons[0].label === 'Show the MCP Dock', scr.rows[0].buttons.map((b) => b.label));
+await scr.rows[0].buttons[0].act();
+ok('...which asks that window to focus itself, over the only route a plugin has into another window', sneighbour.focused === 1, sneighbour.focused);
+api.settings({ dock_port: null });
+// An idle holder is SAID, because "why is this window about to be recycled" is a question the row
+// has to answer on its own.
+await jpost(SPORT, '/claim', { session: { id: 'idle-2', client: 'shim-idle' } });
+await sleep(320);
+scr = api.startScreen();
+ok('an idle holder is named as such, with what that means for the window', /idle \d+s - this window is free to recycle/.test(scr.rows[0].lines[1]), scr.rows[0].lines[1]);
+await jpost(SPORT, '/claim', { session: { id: 'idle-2' }, release: true });
+// A stopped bridge is the one state where the section's only useful offer is to start it.
+api.stop();
+scr = api.startScreen();
+ok('a window whose bridge is stopped says so and offers the one thing worth doing', scr.rows[0].head.indexOf('stopped') > 0 && scr.rows[0].buttons.length === 1 && scr.rows[0].buttons[0].label === 'Start the bridge', scr.rows[0]);
+api.start({ prompt: false });
+await sleep(200);
+api.setRole('agent');
+
+// --- THE DOCK'S START SCREEN ----------------------------------------------------------------
+const SP2 = api.status().port;
+api.becomeDock();
+await jpost(SP2, '/dock/hello', { window: 'win-o1', port: sbase + 6, role: 'agent' });
+await jpost(SP2, '/dock/beat', { window: 'win-o1', port: sbase + 6, role: 'agent', claimed_by: null, open: [], dirty: 0 });
+await jpost(SP2, '/dock/hello', { window: 'win-o2', port: sbase + 7, role: 'agent' });
+await jpost(SP2, '/dock/beat', { window: 'win-o2', port: sbase + 7, role: 'agent', claimed_by: null, open: [], dirty: 0 });
+scr = api.startScreen();
+const srow = (port) => api.startScreen().rows.find((r) => r.port === port);
+ok('the DOCK\'s start screen is the roster: itself first, then the windows it watches',
+    scr.heading === 'MCP Dock' && scr.rows[0].self === true && scr.rows[0].port === SP2
+    && !!srow(sbase + 6) && !!srow(sbase + 7), scr.rows.map((r) => r.port));
+ok('...and the dock offers no Close for itself, because it is what keeps every other window safe to close',
+    scr.rows[0].buttons.map((b) => b.label).join('|') === 'Rescan now', scr.rows[0].buttons.map((b) => b.label));
+// The verbs say what they do since 0.11.0 (section 13): "Release" did not say it takes the window
+// away from the session in it, and "Adopt" did not say it makes a person's window claimable.
+ok('...while each window it watches gets Focus, a role it can be given, and a close', srow(sbase + 6).buttons.map((b) => b.label).join('|') === 'Focus|Take back|Close', srow(sbase + 6).buttons.map((b) => b.label));
+ok('...and an empty agent window is labelled with what a person should do about it', srow(sbase + 6).note === 'empty and unclaimed - safe to close', srow(sbase + 6).note);
+// The one act the report asked for by name: get rid of the row of empties, in one press.
+const o1 = await stubWindow(sbase + 6, { window: 'win-o1', role: 'agent' });
+const o2 = await stubWindow(sbase + 7, { window: 'win-o2', role: 'agent' });
+scr = api.startScreen();
+const sweepAll = scr.buttons.find((b) => /Close all 2 empty agent windows/.test(b.label));
+ok('two empty agent windows earn one button that closes them both', !!sweepAll, scr.buttons.map((b) => b.label));
+await sweepAll.act();
+ok('...and pressing it closes each of them through the route only that window can serve', o1.closed === 1 && o2.closed === 1, { o1: o1.closed, o2: o2.closed });
+
+// --- A DOCK WHOSE TIMERS ARE FROZEN ---------------------------------------------------------
+// Measured in the running app 2026-09-12: every bridge window reports `visibilityState: "hidden"`,
+// and a window hidden longer than five minutes gets Chromium's INTENSIVE THROTTLING - a 500ms
+// interval ticked ZERO times in eight seconds in the dock against six in a window hidden for less.
+// The dock is by definition the window a person leaves in the background, so nothing about its
+// picture may depend on its own timer. Two consequences, both tested here.
+const stale = api.status().limits.beat_stale_ms;
+ok('the staleness threshold clears Chromium\'s one-callback-a-minute floor, or every background window reads as wedged', stale >= 60000, stale);
+api.settings({ beat_stale_ms: 300 });
+await jpost(SP2, '/dock/hello', { window: 'win-vanish', port: sbase + 9, role: 'agent' });
+await jpost(SP2, '/dock/beat', { window: 'win-vanish', port: sbase + 9, role: 'agent', claimed_by: null, open: [], dirty: 0 });
+ok('a window that registered and beat is in the roster', !!api.startScreen().rows.find((r) => r.port === sbase + 9), api.startScreen().rows.map((r) => r.port));
+await sleep(1000);
+ok('...and once nothing has been heard from it, it is not LISTED - with no scan having run at all', !api.startScreen().rows.find((r) => r.port === sbase + 9), api.startScreen().rows.map((r) => r.port));
+// An incoming beat is the one clock a throttled window still has, so it does the forgetting too -
+// and this is a beat from a DIFFERENT window, which is what makes it the beat and not the read.
+await jpost(SP2, '/dock/beat', { window: 'win-h' + (sbase + 2), port: sbase + 2, role: 'agent', claimed_by: { session: 'held-' + (sbase + 2), connected: true }, open: [{ name: 'x', saved: true }], dirty: 0 });
+ok('...and an incoming beat from any window is what forgets that row for good', !(await jget(SP2, '/dock')).windows.some((w) => w.port === sbase + 9), (await jget(SP2, '/dock')).windows.map((w) => w.port));
+api.settings({ beat_stale_ms: null });
+
+// --- THE CEILING, AND REUSE BEFORE IT --------------------------------------------------------
+// `POST /window` is the route a shim from before toolkit 0.145.0 calls on a poll, forever, and no
+// shim-side fix reaches one that is already running (section 12.2). So the plugin answers it.
+// (The two orphans above are gone from the roster, because that is what the button did to them.)
+api.settings({ max_agent_windows: 3 });
+for (const p of [sbase + 2, sbase + 3, sbase + 4]) {
+    await jpost(SP2, '/dock/beat', { window: 'win-h' + p, port: p, role: 'agent', claimed_by: { session: 'held-' + p, connected: true }, open: [{ name: 'x', saved: true }], dirty: 0 });
+}
+const dagents = (await jget(SP2, '/dock')).windows.filter((w) => w.role === 'agent');
+ok('the dock is watching three agent windows', dagents.length === 3, dagents.map((w) => w.port));
+const dalloc = await jpost(SP2, '/dock/window', { session: { id: 'newcomer' } });
+ok('...so a fourth is refused, naming the windows it has and the setting that says how many', dalloc.ok === false && /limit is 3/.test(dalloc.error) && dalloc.agent_windows.length === 3 && /Settings/.test(dalloc.hint), dalloc);
+api.resignDock(null);
+await new Promise((r) => o1.srv.close(r));
+await new Promise((r) => o2.srv.close(r));
+
+const SP3 = api.status().port;
+// One empty agent window in the range: hand it over rather than make a second.
+const free1 = await stubWindow(sbase + 6, { window: 'win-free', role: 'agent' });
+g._new_window = [];
+let sw = await jpost(SP3, '/window', { session: { id: 'asker-1' } });
+ok('POST /window REUSES an empty agent window before it makes one', sw.ok === true && sw.reused === true && sw.port === sbase + 6 && g._new_window.length === 0, { sw, opened: g._new_window });
+ok('...by telling that window to be an agent\'s again, pre-claimed for whoever asked', free1.roles.length === 1 && free1.roles[0].claim_for === 'asker-1' && free1.roles[0].role === 'agent', free1.roles);
+// A session that already holds one is handed the same one back. This is the poll-forever case: an
+// old shim that asks on every tick must not be given a window on every tick.
+const held1 = await stubWindow(sbase + 3, { window: 'win-held', role: 'agent', claimed_by: { session: 'asker-2', connected: true } });
+g._new_window = [];
+sw = await jpost(SP3, '/window', { session: { id: 'asker-2' } });
+ok('...and a session that already holds a window is handed that one, not another', sw.ok === true && sw.rejoined === true && sw.port === sbase + 3 && g._new_window.length === 0, { sw, opened: g._new_window });
+// Now the ceiling itself: every agent window in the range spoken for, and the limit reached.
+free1.info.claimed_by = { session: 'someone-else', connected: true };
+const held2 = await stubWindow(sbase + 2, { window: 'win-held2', role: 'agent', claimed_by: { session: 'third', connected: true } });
+g._new_window = [];
+sw = await jpost(SP3, '/window', { session: { id: 'asker-3' } });
+ok('with every agent window held and the limit reached, no window is made', sw.ok === false && sw.opened === false && g._new_window.length === 0, { sw, opened: g._new_window });
+ok('...and the refusal names the ports, the limit and where a person changes it', /limit is 3/.test(sw.error) && sw.max_agent_windows === 3 && sw.agent_windows.length >= 3 && /Settings/.test(sw.hint), sw);
+// A person's own windows are not counted and never stand in the way of an agent getting one.
+const personWindow = await stubWindow(sbase + 1, { window: 'win-person', role: 'person' });
+api.settings({ max_agent_windows: 8 });
+g._new_window = [];
+g._openStubWindow = null;
+sw = await jpost(SP3, '/window', { session: { id: 'asker-4' } });
+ok('a raised limit lets the next ask through, and a person\'s window was never part of the count', sw.ok === true && sw.opened === true && g._new_window.length === 1, { sw, opened: g._new_window });
+// AND THE ASK NOBODY CAN SEE YET. Six windows got past a ceiling of three on 2026-09-12, live:
+// several stale shims asked inside the same second, and a window that has been asked for does not
+// exist for a second or two - no scan can count it. So the ask itself is counted, out of the
+// pending handoffs, which are also the one count SHARED between windows: that is what makes this
+// hold when the asks arrive at different windows, which is the shape the live run had.
+//
+// The limit is set to FOUR here, one above the three windows that can be scanned, so that only the
+// outstanding ask can account for the refusal.
+api.settings({ max_agent_windows: 4 });
+// Every ask but asker-4's is forgotten - earlier sections of this file ask as sessions of their own,
+// and inside one fast test run those asks are still in flight - so the count below is unambiguous:
+// three windows that can be scanned, and one that cannot be.
+for (const e of api.asked()) if (e.session !== 'asker-4') api.forgetAsk(e.session);
+g._new_window = [];
+sw = await jpost(SP3, '/window', { session: { id: 'racer-1' } });
+ok('a window that has been asked for but does not exist yet is still counted', sw.ok === false && /3 agent window\(s\)/.test(sw.error) && /1 asked for/.test(sw.error) && g._new_window.length === 0, sw);
+// ONE SESSION, ONE WINDOW, EVEN WHEN IT ASKS TWICE. Live on 2026-09-12 a single stale shim held
+// THREE windows: it asks on its poll cadence, and each ask ran before the window the previous one
+// triggered existed to be found. The ask it already has outstanding is the thing to find instead.
+ok('...and the identity left for that window is still the one the asker paid for', api.adopt() === true && api.window().claimed_by.session === 'asker-4', api.window());
+// THE GAP IS MODELLED, because it is the whole point: the window that was born CONSUMES the handoff
+// and then takes a second or two to answer on a port, and it is in there that a polling shim asks
+// again. So the pending list is emptied here the way that newborn empties it, while the window it
+// became is still not in any scan.
+g.localStorage.setItem('mcptoolkit_bridge.pending', '[]');
+g._new_window = [];
+const twice = await jpost(SP3, '/window', { session: { id: 'asker-4' } });
+ok('a session that has already asked is told one is coming, and no second window is made', twice.ok === true && twice.opening === true && twice.opened === undefined && g._new_window.length === 0, { twice, opened: g._new_window });
+ok('...and it is the ASK that says so, which outlives the handoff the newborn window consumed', api.asked().some((e) => e.session === 'asker-4') && JSON.parse(g.localStorage.getItem('mcptoolkit_bridge.pending')).length === 0, { asked: api.asked(), pending: g.localStorage.getItem('mcptoolkit_bridge.pending') });
+api.settings({ max_agent_windows: 8 });
+// A RELOAD IS NOT A BIRTH. Reloading the plugin looks identical from inside - onload, a port, a
+// pending entry to consume - and live on 2026-09-12 four reloads ate four asks, so the windows that
+// did appear registered as the person's and the ceiling stopped counting them. `sessionStorage` is
+// per WINDOW and survives a plugin reload, which is exactly the distinction, and the harness can
+// play the reload by setting the mark this renderer would already carry.
+g.sessionStorage = { store: { 'mcptoolkit_bridge.born': '1' }, getItem(k) { return this.store[k] ?? null; }, setItem(k, v) { this.store[k] = String(v); } };
+g.__plugin.onload();
+await jpost(SP3, '/window', { session: { id: 'asker-5' } });
+ok('a plugin RELOAD does not eat the handoff left for a window that is being born', api.adopt() === false, api.adopt());
+delete g.sessionStorage;
+g.__plugin.onload();
+ok('...and a renderer that has never run this plugin still takes the one left for it', api.adopt() === true && api.window().claimed_by.session === 'asker-5', api.window());
+await jpost(SP3, '/claim', { session: { id: 'asker-4' }, release: true });
+for (const s of [free1, held1, held2, personWindow, sneighbour]) await new Promise((r) => s.srv.close(r));
+
+// --- DRIVING A WINDOW THAT HAS NOTHING OPEN --------------------------------------------------
+// The dock holds no project by design, and every tool resolved one first - so the window that
+// governs the others could not be driven, read or probed at all (section 12.6).
+let rv = await jpost(SP3, '/cmd', { tool: 'risky_eval', args: { code: 'PROJECT === null ? "no project" : PROJECT.name' }, session: { id: 'prober' } });
+ok('risky_eval runs in a window with no project, and PROJECT is null there rather than a refusal', rv.ok === true && rv.result.value === 'no project' && rv.result.project === undefined, rv);
+rv = await jpost(SP3, '/cmd', { tool: 'trigger_action', args: { id: 'select_all' }, session: { id: 'prober' } });
+ok('...and so does trigger_action, which is how a window\'s own menu is reachable', rv.ok === true && rv.result.triggered === 'select_all', rv);
+rv = await jpost(SP3, '/cmd', { tool: 'list_outline', args: {}, session: { id: 'prober' } });
+ok('a tool that genuinely needs a project still refuses, naming the fix', rv.ok === false && /no project is open/.test(rv.error) && /project op:new/.test(rv.hint), rv);
+
+// --- ONE ENTRY IN THE TOOLS MENU -------------------------------------------------------------
+// Seven top-level entries, with two other plugins of this workspace in the same menu, took the menu
+// over (reported 2026-09-12, and read back from the live menu structure).
+const menu = api.menuNames();
+// EVERY registration this plugin has ever made is the one submenu - not "one at the moment", which
+// a second onload would satisfy while seven loose entries sat beside it.
+ok('the plugin registers ONE entry in Tools, and everything else hangs under it',
+    g.MenuBar.added.length >= 1 && g.MenuBar.added.every((a) => a.id === 'mcptoolkit_bridge_menu' && a.path === 'tools' && a.children === 8), g.MenuBar.added);
+ok('...and start and stop are one entry that says which is true', /^Stop the bridge \(running on \d+\)$/.test(menu.toggle) && menu.children.indexOf('mcptoolkit_bridge_toggle') === 0, menu);
+ok('...and the parent carries the port, so a stack of windows is tellable apart from the menu alone', menu.parent === 'MCP Toolkit Bridge (port ' + SP3 + ')', menu.parent);
+api.stop();
+ok('a stopped bridge re-labels the entry rather than offering both', api.menuNames().toggle === 'Start the bridge' && api.menuNames().parent === 'MCP Toolkit Bridge (stopped)', api.menuNames());
+
+g.ModelProject.all.push(...sOpen);
+g.Project = sOpen[sOpen.length - 1] || null;
+g._closed = closedBefore;
+// The base is left where this section put it and NEVER set back to the shipped 25801, which is a
+// real Blockbench's range: with a base in that range and a port already bound, this harness's next
+// `findDock` scan reached the developer's OWN dock and registered itself in its roster - seen
+// 2026-09-12, a live dock listing four ephemeral ports that were test processes. A test must not be
+// able to appear in the app it is testing.
+api.settings({ max_agent_windows: null, idle_claim_ms: null, empty_grace_ms: null, reach_ms: null, dock_scan_ms: null, dock_port: null });
+
+// =============================================================================================
+// SECTION 13 OF THE ISOLATION RECORD (2026-09-13), sections 15-23 here. Every check below was run
+// against plugin 0.10.0 first (MCPTK_PLUGIN_PATH, see the top of this file) and went red there;
+// a check that is green on both versions is not a falsifier and does not belong here. Each group
+// is guarded so that an older plugin - which lacks half of the api - reports a red line for the
+// group rather than killing the run before the later groups have said anything.
+// =============================================================================================
+const guarded = async (what, fn) => {
+    try { await fn(); } catch (e) { ok(what + ': the group ran to its end', false, String(e && e.stack || e).split('\n').slice(0, 2).join(' ')); }
+};
+const STORE_KEY = 'mcptoolkit_bridge.settings';
+const readStore = () => JSON.parse(g.localStorage.getItem(STORE_KEY) || '{}');
+/** A presence socket that keeps EVERY line it is sent, and knows when the plugin closed it. */
+const presenceLines = (base, id, client) => new Promise((resolve, reject) => {
+    const out = { lines: [], closed: false, req: null };
+    out.req = http.get(base + '/presence', { headers: { 'X-MCPTK-Client': client, 'X-MCPTK-Session': id } }, (pres) => {
+        pres.setEncoding('utf8');
+        let tail = '';
+        pres.on('data', (d) => {
+            tail += d;
+            const parts = tail.split('\n'); tail = parts.pop();
+            for (const p of parts) { if (p.trim()) { try { out.lines.push(JSON.parse(p)); } catch (e) { /* a beat */ } } }
+            if (out.lines.length === 1 && out.status === undefined) { out.status = pres.statusCode; resolve(out); }
+        });
+        pres.on('close', () => { out.closed = true; });
+        pres.on('end', () => { out.closed = true; });
+        if (pres.statusCode !== 200) { out.status = pres.statusCode; resolve(out); }
+    });
+    out.req.on('error', reject);
+});
+
+// =============================================================================================
+section('15. settings live in the store, not in the window');
+// =============================================================================================
+// Until 0.11.0 `settings` was read once at onload and written back WHOLE, so a save from one window
+// overwrote what another had changed, and a ceiling raised in window A was never the ceiling the
+// dock applied. Two halves, both testable without a second renderer: the write reloads before it
+// merges, and the read listens to the `storage` event - which the harness dispatches by hand,
+// because both plugin instances here share one process and no real event crosses them.
+await guarded('settings: the write', async () => {
+    // Another window saved a key this instance has never heard of.
+    const foreign = Object.assign(readStore(), { foreign_key: 'written-by-window-b' });
+    g.localStorage.setItem(STORE_KEY, JSON.stringify(foreign));
+    api.settings({ x: 1 });
+    const after = readStore();
+    ok('a save carries only the keys it was given: a key another window wrote survives it', after.foreign_key === 'written-by-window-b' && after.x === 1, after);
+});
+await guarded('settings: the listener', async () => {
+    // The listener the plugin registered at onload is what a real renderer would call.
+    const stored = (g.window.listeners.storage || []);
+    ok('onload registered ONE storage listener on the window', stored.length === 1 && typeof stored[0] === 'function', stored.length);
+    g.localStorage.setItem(STORE_KEY, JSON.stringify(Object.assign(readStore(), { idle_claim_ms: 4321 })));
+    ok('...and a value another window stored is not this window\'s until the event says so', api.status().limits.idle_claim_ms !== 4321, api.status().limits);
+    if (stored[0]) stored[0]({ key: STORE_KEY });
+    ok('...and it reloads: a setting saved elsewhere reaches every reader here', api.status().limits.idle_claim_ms === 4321, api.status().limits);
+});
+await guarded('settings: the event', async () => {
+    // Another window raised the ceiling. The value is in the store and NOT yet in this instance -
+    // and it is the event, not the save, that delivers it.
+    g.localStorage.setItem(STORE_KEY, JSON.stringify(Object.assign(readStore(), { max_agent_windows: 7 })));
+    ok('a ceiling another window stored is not this window\'s yet', api.status().limits.max_agent_windows !== 7, api.status().limits);
+    api.onStorage({ key: STORE_KEY });
+    ok('the storage event reloads: the ceiling read here is the one saved elsewhere', api.status().limits.max_agent_windows === 7, api.status().limits);
+    api.onStorage({ key: 'somebody_elses.key' });
+    ok('...and an event for another key is ignored', api.status().limits.max_agent_windows === 7, api.status().limits);
+});
+api.settings({ max_agent_windows: null, idle_claim_ms: null, x: null, foreign_key: null });
+
+// =============================================================================================
+section('16. a dock survives an internal restart and not an explicit stop, and become-dock checks first');
+// =============================================================================================
+const xpick = await pickBase(8);
+const xbase = xpick.base;
+ok('a free span for section 13\'s checks', !!xbase && !!xpick.squatter, xbase);
+await new Promise((r) => xpick.squatter.close(r));
+api.settings({ port: xbase, dock_port: null, reach_ms: 400, dock_scan_ms: 600000, birth_ms: null, empty_grace_ms: null, idle_claim_ms: null });
+api.start({ prompt: false });
+await sleep(200);
+const XP = api.status().port;
+ok('the bridge is listening on the base of that span', XP === xbase && api.status().listening === true, api.status());
+await guarded('dock: stop', async () => {
+    // `stop()` nulled `boundPort` before comparing it to `dock_port`, so a stopped dock never cleared
+    // its hint and every other window kept trying a door that could not answer.
+    api.becomeDock();
+    ok('the menu makes this window the dock and stores its port as the hint', api.role() === 'dock' && api.settings().dock_port === XP, api.settings().dock_port);
+    api.stop();
+    ok('an explicit stop resigns the dock and clears the hint it left for the others', api.settings().dock_port === null && api.role() !== 'dock' && api.status().listening === false, { dock_port: api.settings().dock_port, role: api.role() });
+    api.start({ prompt: false });
+    await sleep(200);
+});
+// (The stubs live OUTSIDE the guarded groups: a group that throws on an older plugin must not leave
+// a server on a port the next section binds.)
+const xrival = await stubWindow(xbase + 1, { window: 'win-rival', role: 'dock' });
+await guarded('dock: make', async () => {
+    // "Make this window the MCP Dock" used to skip the one-dock check "Open the MCP Dock" makes, and
+    // the lowest-port rule then quietly overruled the window the person had just chosen.
+    const md = await api.makeDock();
+    ok('make-dock refuses while a dock answers in the range, naming its port', md.ok === false && md.dock_port === xbase + 1 && new RegExp('port ' + (xbase + 1)).test(md.error) && api.role() !== 'dock', md);
+});
+await new Promise((r) => xrival.srv.close(r));
+await guarded('dock: make, range clear', async () => {
+    const md = await api.makeDock();
+    ok('...and with the range clear it makes this window the dock', md.ok === true && api.role() === 'dock' && api.settings().dock_port === XP, md);
+});
+api.stop();
+api.resignDock(null);
+api.start({ prompt: false });
+await sleep(200);
+const inRange = await stubWindow(xbase + 2, { window: 'win-r', role: 'agent' });
+await guarded('dock: restart', async () => {
+    // A base-port change in Settings goes through `restart`, which keeps the role - and scans again,
+    // which a stopped-and-started dock never did.
+    api.becomeDock();
+    api.restart({ prompt: false });
+    await sleep(600);
+    ok('an internal restart keeps the dock role and re-writes the hint', api.role() === 'dock' && api.status().listening === true && api.settings().dock_port === api.status().port, { role: api.role(), status: api.status() });
+    const roster = api.dock();
+    ok('...and scans again: a window in the range is in the roster with no scan asked for', roster.ok !== false && Array.isArray(roster.windows) && roster.windows.some((w) => w.port === xbase + 2), roster.windows && roster.windows.map((w) => w.port));
+    api.stop();
+    ok('...and stopping it afterwards still resigns it', api.role() !== 'dock' && api.settings().dock_port === null, api.role());
+});
+await new Promise((r) => inRange.srv.close(r));
+// An older plugin's stop() does not resign the dock; said explicitly so the sections below test what
+// they say they test on either version.
+api.stop();
+api.resignDock(null);
+api.settings({ dock_port: null });
+
+// =============================================================================================
+section('17. a handoff lives as long as its ask');
+// =============================================================================================
+// A handoff lived 120 s and its ask was counted for 20 s, so a window a person opened by hand in
+// the gap became an agent window pre-claimed for a session that had already given up.
+api.start({ prompt: false });
+await sleep(200);
+api.setRole('person');
+await guarded('handoff: forgotten with its ask', async () => {
+    g.localStorage.setItem('mcptoolkit_bridge.pending', '[]');
+    g.localStorage.setItem('mcptoolkit_bridge.asked', '[]');
+    const realNW = g.BarItems.new_window;
+    g.BarItems.new_window = { click() {} };
+    const asked = await jpost(XP, '/window', { session: { id: 'ttl-1', client: 'shim-ttl' } });
+    g.BarItems.new_window = realNW;
+    const pendingNow = JSON.parse(g.localStorage.getItem('mcptoolkit_bridge.pending') || '[]');
+    ok('an ask leaves a handoff for the window it opens', asked.ok === true && pendingNow.some((e) => e.session === 'ttl-1'), { asked, pendingNow });
+    api.forgetAsk('ttl-1');
+    const pendingAfter = JSON.parse(g.localStorage.getItem('mcptoolkit_bridge.pending') || '[]');
+    ok('forgetting the ask drops the handoff with it, so no later window becomes that session\'s', !pendingAfter.some((e) => e.session === 'ttl-1') && api.adopt() === false, { pendingAfter, adopted: api.adopt() });
+});
+await guarded('handoff: one clock', async () => {
+    api.settings({ birth_ms: 2500 });
+    ok('the handoff TTL is the ask\'s clock, `birth_ms`', api.pendingTtlMs() === 2500, api.pendingTtlMs());
+    api.settings({ birth_ms: null });
+    ok('...and the shipped default is the same 20 seconds', api.pendingTtlMs() === 20000, api.pendingTtlMs());
+});
+
+// =============================================================================================
+section('18. the queue: visible on /hello, and a call whose caller hung up is dropped');
+// =============================================================================================
+// One queue for every session and a two-minute ceiling in the shim: a `place_cube` queued behind a
+// long push used to RUN after the agent had been told it failed, and the retry doubled it.
+const qOpen = g.ModelProject.all.slice();
+g.ModelProject.all.length = 0;
+g.Project = null;
+await guarded('queue', async () => {
+    // The control: the very call that is dropped below does run, and does what it says, when its
+    // caller waits for it. Without this the drop check could pass because the call was refused.
+    delete g.__mcptkRan;
+    const ctrl = await jpost(XP, '/cmd', { tool: 'risky_eval', args: { code: 'globalThis.__mcptkRan = 1' }, session: { id: 'q-0' } });
+    ok('control: the side-effect call runs when its caller waits', ctrl.ok === true && g.__mcptkRan === 1, { ctrl, ran: g.__mcptkRan });
+    delete g.__mcptkRan;
+    const slow = jpost(XP, '/cmd', { tool: 'risky_eval', args: { code: 'await new Promise((r) => setTimeout(r, 500)); 1' }, session: { id: 'q-1' } });
+    await sleep(80);
+    let qh = await jget(XP, '/hello');
+    ok('/hello says what is running and for whom', qh.queue && qh.queue.running && qh.queue.running.name === 'risky_eval' && qh.queue.running.session === 'q-1' && qh.queue.waiting === 0, qh.queue);
+    const behind = jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'q-2' } });
+    await sleep(60);
+    qh = await jget(XP, '/hello');
+    ok('...and how many wait behind it', qh.queue && qh.queue.waiting === 1, qh.queue);
+    // A caller that gives up before its turn: the body is delivered, the socket is destroyed while
+    // the call sits in the queue behind the slow one.
+    await new Promise((resolve) => {
+        const body = JSON.stringify({ tool: 'risky_eval', args: { code: 'globalThis.__mcptkRan = 1' }, session: { id: 'q-3' } });
+        const rq = http.request('http://127.0.0.1:' + XP + '/cmd', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } });
+        rq.on('error', () => {});
+        rq.on('response', (rs) => rs.resume());
+        rq.end(body);
+        setTimeout(() => { rq.destroy(); resolve(); }, 80);
+    });
+    await slow;
+    await behind;
+    await sleep(150);
+    const rec = api.recent();
+    ok('a call whose caller hung up before its turn is skipped and recorded as such', rec.some((r) => r.name === 'risky_eval' && r.session === 'q-3' && r.ok === false && /dropped/.test(r.note || '')), rec.slice(-4));
+    ok('...and its side effect never happened', g.__mcptkRan === undefined, g.__mcptkRan);
+    qh = await jget(XP, '/hello');
+    ok('with the queue drained /hello says nothing is running', qh.queue && qh.queue.running === null && qh.queue.waiting === 0, qh.queue);
+});
+
+// =============================================================================================
+section('19. risky_eval puts SESSION in scope');
+// =============================================================================================
+await guarded('SESSION', async () => {
+    let ev = await jpost(XP, '/cmd', { tool: 'risky_eval', args: { code: 'SESSION' }, session: { id: 'sess-eval', client: 'probe' } });
+    ok('SESSION is the id of the session making the call', ev.ok === true && ev.result.value === 'sess-eval', ev);
+    ev = await jpost(XP, '/cmd', { tool: 'risky_eval', args: { code: 'SESSION' } });
+    ok('...and null for a call with no session block (curl by hand)', ev.ok === true && ev.result.value === null, ev);
+    ev = await jpost(XP, '/cmd', { tool: 'risky_eval', args: { code: 'const s = SESSION; return s + "!"' }, session: { id: 'sess-eval' } });
+    ok('...in the statement shape too', ev.ok === true && ev.result.value === 'sess-eval!', ev);
+});
+g.ModelProject.all.push(...qOpen);
+g.Project = qOpen[qOpen.length - 1] || null;
+
+// =============================================================================================
+section('20. eviction is said, not enforced: the window note on every reply');
+// =============================================================================================
+// A claim steers discovery and nothing else (6.3 stands), so nothing a person did to a window
+// reached the session in it: Take back, the recycle, Stop all dropped `claimedBy` while the shim
+// kept its cached window. Now every `/cmd` reply from an agent window whose holder is not the
+// caller carries `window: {port, window, held_by, reason, note}`; the call still RUNS.
+await guarded('eviction note', async () => {
+    api.setRole('agent');
+    const A = { id: 'ev-a', client: 'shim-a' };
+    let cl = await jpost(XP, '/claim', { session: A });
+    ok('session A holds the agent window', cl.ok === true && cl.claimed_by.session === 'ev-a', cl);
+    let env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'ev-b', client: 'shim-b' } });
+    ok('a call from another session carries the window note on the ENVELOPE, and still ran', env.ok === true && Array.isArray(env.result.projects) && env.window && env.window.port === XP && env.window.window === api.status().window && env.window.held_by && env.window.held_by.session === 'ev-a', env.window);
+    ok('...saying whose it is and what to do', env.window && env.window.reason === 'held by session ev-a (shim-a)' && /held by session ev-a \(shim-a\)/.test(env.window.note) && /next call resolves a window of its own/.test(env.window.note), env.window);
+    // EVERY envelope: the note is stamped in `call()` after `perform()`, so the two refusals that
+    // used to escape it - an argument refusal thrown by `checkArgs` before the session was resolved,
+    // and an unknown tool's early return - carry it as well.
+    env = await jpost(XP, '/cmd', { tool: 'get_project_info', args: { project: 'no-such-project' }, session: { id: 'ev-b' } });
+    ok('a refusal carries it as well as a result', env.ok === false && /no-such-project/.test(env.error) && env.window && env.window.held_by.session === 'ev-a', env);
+    env = await jpost(XP, '/cmd', { tool: 'place_cube', args: { elements: [], bogus: 1 }, session: { id: 'ev-b' } });
+    ok('...an argument refusal too', env.ok === false && /bogus/.test(env.error) && env.window && env.window.held_by.session === 'ev-a', env);
+    env = await jpost(XP, '/cmd', { tool: 'no_such_tool', args: {}, session: { id: 'ev-b' } });
+    ok('...and an unknown tool', env.ok === false && /unknown tool/.test(env.error) && env.window && env.window.held_by.session === 'ev-a', env);
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: A });
+    ok('the holder\'s own call carries none', env.ok === true && env.window === undefined, env.window);
+    // The person takes the window back (the dock's Take back, the menu's take-back): it is a
+    // person's window now. THE SESSION IT WAS TAKEN FROM IS STILL TOLD - found live 2026-09-13: an
+    // agent-only rule left the evicted session calling into a person's window with nothing said -
+    // while anybody else calling into a person's window reads nothing, because a person's window
+    // was never theirs to lose.
+    api.setRole('person');
+    ok('taking it back drops the claim', (await jget(XP, '/hello')).claimed_by === null, await jget(XP, '/hello'));
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: A });
+    ok('in the (now person) window A\'s next call still says it was taken back, and that nobody holds it', env.ok === true && env.window && env.window.reason === 'taken back from the MCP Dock' && env.window.held_by === null && /held by nobody yet/.test(env.window.note), env.window);
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'ev-f', client: 'shim-f' } });
+    ok('...while a fresh session calling into that person\'s window reads nothing: only the evicted one is told', env.ok === true && env.window === undefined, env.window);
+    // Given to agents again and claimed by C: A is told what happened to it, by name, because the
+    // last eviction here was A's; a bystander is only told who holds it.
+    api.setRole('agent');
+    cl = await jpost(XP, '/claim', { session: { id: 'ev-c', client: 'shim-c' } });
+    ok('session C claims it', cl.ok === true && cl.claimed_by.session === 'ev-c', cl);
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: A });
+    ok('A\'s call now says it was taken back, and who has the window since', env.window && env.window.reason === 'taken back from the MCP Dock' && /any more \(taken back from the MCP Dock\)/.test(env.window.note) && /held by session ev-c \(shim-c\)/.test(env.window.note) && env.window.held_by.session === 'ev-c', env.window);
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'ev-d' } });
+    ok('...while a bystander that never held it reads only who does', env.window && env.window.reason === 'held by session ev-c (shim-c)' && !/any more/.test(env.window.note), env.window);
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'ev-c' } });
+    ok('...and C, the holder, reads nothing', env.window === undefined, env.window);
+    await jpost(XP, '/claim', { session: { id: 'ev-c' }, release: true });
+    env = await jpost(XP, '/cmd', { tool: 'project', args: { op: 'list' }, session: { id: 'ev-d' } });
+    ok('an unclaimed agent window says so, without naming a holder', env.window && env.window.reason === 'unclaimed' && env.window.held_by === null, env.window);
+});
+
+// =============================================================================================
+section('21. the recycle closes the evicted session\'s presence, with a last line');
+// =============================================================================================
+// A shim between calls has no reply to read the note off, so the recycle - and ONLY the recycle,
+// which happens to an empty window with nothing behind the socket - writes one last line on the
+// evicted session's presence responses and closes them (`reconcileWindow` then runs in the shim).
+const rOpen = g.ModelProject.all.slice();
+await guarded('recycle presence', async () => {
+    api.setRole('agent');
+    api.settings({ idle_claim_ms: 250 });
+    const pl = await presenceLines('http://127.0.0.1:' + XP, 'rc-1', 'shim-rc');
+    ok('session rc-1 is connected through presence', pl.status === 200 && pl.lines[0] && pl.lines[0].session === 'rc-1', pl.lines[0]);
+    const cl = await jpost(XP, '/claim', { session: { id: 'rc-1', client: 'shim-rc' } });
+    ok('...and holds the window', cl.ok === true && cl.claimed_by.session === 'rc-1', cl);
+    g.ModelProject.all.length = 0;
+    g.Project = null;
+    await sleep(330);
+    const hi = await jget(XP, '/hello');
+    ok('an empty window whose holder went idle is recycled: the claim is dropped', hi.claimed_by === null, hi.claimed_by);
+    await sleep(200);
+    const evicted = pl.lines.find((l) => l.evicted === true);
+    ok('the evicted session was told on the socket it already holds, with the reason', !!evicted && evicted.session === 'rc-1' && /recycled/.test(evicted.reason) && evicted.port === XP && /next call resolves a window of its own/.test(evicted.note), pl.lines);
+    ok('...and the socket was then closed by the plugin, not by the shim', pl.closed === true, pl.closed);
+    try { pl.req.destroy(); } catch (e) { /* already gone */ }
+    api.settings({ idle_claim_ms: null });
+});
+g.ModelProject.all.length = 0;
+g.ModelProject.all.push(...rOpen);
+g.Project = rOpen[rOpen.length - 1] || null;
+api.setRole('person');
+
+// =============================================================================================
+section('22. the door refuses a browser');
+// =============================================================================================
+// A page in a browser tab can blind-POST `risky_eval` or `POST /close {force:true}` to a loopback
+// port as a request that needs no preflight. A browser sends an Origin it cannot forge; a local
+// process (curl, the shim, another window's plugin) sends none - measured 2026-09-13, the Blockbench
+// renderer sends no Origin on its own cross-window fetches.
+await guarded('origin', async () => {
+    const post = (origin) => fetch('http://127.0.0.1:' + XP + '/cmd', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, origin === undefined ? {} : { Origin: origin }), body: JSON.stringify({ tool: 'project', args: { op: 'list' }, session: { id: 'origin-probe' } }) }).then(async (r) => Object.assign({ _s: r.status }, await r.json()));
+    let o = await post('https://example.com');
+    ok('a POST /cmd from a web origin is 403 with ok:false and the sentence', o._s === 403 && o.ok === false && /loopback origins only/.test(o.error) && /browser/.test(o.error), o);
+    o = await post('http://127.0.0.1:1234');
+    ok('a loopback origin passes', o._s === 200 && o.ok === true, o);
+    o = await post(undefined);
+    ok('...and so does no Origin at all, which is what every local process sends', o._s === 200 && o.ok === true, o);
+    const hi = await fetch('http://127.0.0.1:' + XP + '/hello', { headers: { Origin: 'https://example.com' } });
+    ok('the rule is on the DOOR, not one route: GET /hello from a web origin is refused too', hi.status === 403, hi.status);
+    ok('the refusal is in the recent calls, so a person can see that a page tried', api.recent().some((r) => r.ok === false && /refused: Origin https:\/\/example\.com/.test(r.note || '')), api.recent().slice(-3));
+});
+await guarded('origin: the rule', async () => {
+    const table = [[null, true], ['', true], ['null', true], ['http://localhost', true], ['https://[::1]:1', true], ['http://127.0.0.1:25801', true],
+        ['file://127.0.0.1', false], ['http://127.0.0.1.evil.example', false], ['https://example.com', false], ['http://localhost.evil', false]];
+    const wrong = table.filter(([v, want]) => api.isLoopbackOrigin(v) !== want).map(([v]) => JSON.stringify(v));
+    ok('isLoopbackOrigin: absent, blank and "null" pass, loopback http(s) passes, everything else is refused', wrong.length === 0, wrong);
+});
+
+// =============================================================================================
+section('23. the dock\'s verbs say what they do, and Status is the same rows');
+// =============================================================================================
+const dockStubs = [];
+await guarded('dock verbs', async () => {
+    api.settings({ dock_port: null });
+    api.becomeDock();
+    ok('this window is the dock for the roster below', api.role() === 'dock', api.role());
+    // Three windows a dock can watch: a person's with work in it, an agent's somebody holds, and a
+    // person's standing empty. `open` and `claimed_by` ride /hello, which is what the scan reads.
+    dockStubs.push(await stubWindow(xbase + 2, { window: 'win-p', role: 'person', open: [{ name: 'dragon', saved: true }, { name: 'egg', saved: false }], dirty: 1 }));
+    dockStubs.push(await stubWindow(xbase + 3, { window: 'win-h', role: 'agent', claimed_by: { session: 'held-x', client: 'shim-x', connected: true, seen_s_ago: 0 }, open: [] }));
+    dockStubs.push(await stubWindow(xbase + 4, { window: 'win-e', role: 'person', open: [] }));
+    await api.scan();
+    const vrow = (port) => api.startScreen().rows.find((r) => r.port === port);
+    const labels = (port) => (vrow(port) ? vrow(port).buttons.map((b) => b.label).join('|') : null);
+    ok('a person\'s window with a project open offers "Give to agents"', labels(xbase + 2) === 'Focus|Give to agents|Close (discard)', labels(xbase + 2));
+    const give = vrow(xbase + 2) && vrow(xbase + 2).buttons[1];
+    ok('...and that button ASKS, naming the projects that would be exposed', give && typeof give.confirm === 'string' && /dragon, egg/.test(give.confirm) && new RegExp('Port ' + (xbase + 2)).test(give.confirm) && /Give it anyway\?/.test(give.confirm), give && give.confirm);
+    ok('an agent window somebody holds offers "Take back"', labels(xbase + 3) === 'Focus|Take back|Close', labels(xbase + 3));
+    const take = vrow(xbase + 3) && vrow(xbase + 3).buttons[1];
+    ok('...which asks, naming the session that loses the window', take && typeof take.confirm === 'string' && /held by session held-x \(shim-x\)/.test(take.confirm) && /Take it back\?/.test(take.confirm), take && take.confirm);
+    const giveEmpty = vrow(xbase + 4) && vrow(xbase + 4).buttons[1];
+    ok('an empty person\'s window is given without a question', giveEmpty && giveEmpty.label === 'Give to agents' && giveEmpty.confirm === null, giveEmpty);
+});
+await guarded('status model', async () => {
+    // Status... was a JSON dump. It is the same rows as the start screen - one model, painted a
+    // second way - plus the sessions this window knows, with the raw JSON behind one button.
+    const sm = api.statusModel();
+    const screen = api.startScreen();
+    ok('statusModel carries the start screen\'s rows, verbatim', sm.rows.map((r) => r.head).join('|') === screen.rows.map((r) => r.head).join('|') && sm.heading === screen.heading && sm.rows.length === 4, sm.rows.map((r) => r.head));
+    ok('...the sessions this window knows, and the queue', Array.isArray(sm.sessions) && sm.sessions.every((s) => typeof s.id === 'string' && typeof s.alive === 'boolean') && sm.queue && 'running' in sm.queue && 'waiting' in sm.queue, { sessions: sm.sessions.length, queue: sm.queue });
+    ok('...and the raw status behind it, in the shape status() has', sm.raw && Object.keys(sm.raw).join() === Object.keys(api.status()).join(), Object.keys(sm.raw || {}));
+});
+await guarded('pressing', async () => {
+    // Pressing: `confirm` goes through Blockbench's own message box, and the act runs only on the
+    // confirming answer (index 0). The stub records the box instead of showing one.
+    const realBox = g.Blockbench.showMessageBox;
+    g._boxes = [];
+    g.Blockbench.showMessageBox = (o, cb) => { g._boxes.push(o); g._boxCb = cb; };
+    let acted = 0;
+    const item = { label: 'Take back', confirm: 'sure?', act: () => { acted++; } };
+    let pressed = api.pressItem(item);
+    ok('pressing an item with `confirm` opens the message box with that sentence and the verb as its button', g._boxes.length === 1 && g._boxes[0].message === 'sure?' && g._boxes[0].buttons[0] === 'Take back' && acted === 0, g._boxes[0]);
+    g._boxCb(1);
+    await pressed;
+    ok('...and Cancel runs nothing', acted === 0, acted);
+    pressed = api.pressItem(item);
+    g._boxCb(0);
+    await pressed;
+    ok('...while the confirming answer runs the act', acted === 1, acted);
+    await api.pressItem({ label: 'Focus', confirm: null, act: () => { acted++; } });
+    ok('an item without `confirm` runs at once, with no box', acted === 2 && g._boxes.length === 2, { acted, boxes: g._boxes.length });
+    g.Blockbench.showMessageBox = realBox;
+});
+for (const s of dockStubs) await new Promise((r) => s.srv.close(r));
+api.stop();
+api.settings({ dock_port: null, reach_ms: null, dock_scan_ms: null });
+
+// =============================================================================================
+section('24. the crash-recovery guard: quitting takes only the backups of this window');
 // =============================================================================================
 // Closing ANY window clears the whole shared backup store, so one session quitting destroys another
 // window's recovery - measured live, three closes out of three (isolation record section 8). The
@@ -1346,9 +2024,40 @@ if (typeof g.window.onbeforeunload === 'function') g.window.onbeforeunload();
 await g.AutoBackup.removeAllBackups();
 ok('quitting drops only the uuids of this window', Object.keys(g.AutoBackup.entries).join() === 'other-window', g.AutoBackup.entries);
 
+// =============================================================================================
+section('25. place_cube uv:"pack" lays box UV out in free space, and says so when there is none');
+// =============================================================================================
+// LOOP_KIT_DESIGN.md section 13: laying out a sheet is labour, and a designed model has no brief
+// to pin it. A 4x4x4 cube needs a 16x8 box-UV footprint (2(d+w) x (d+h)); a 32x16 sheet holds
+// four of them, and a cube placed by hand at [16,0] with uv:"box" must count as taken.
+r = await call('project', { op: 'new', name: 'packer', format: 'modded_entity', texture_width: 32, texture_height: 16 }, S1);
+ok('a fresh sheet to pack', r.ok && r.result.texture_width === 32 && r.result.texture_height === 16, r);
+r = await call('place_cube', { uv: 'box', elements: [{ name: 'byhand', from: [0, 0, 0], to: [4, 4, 4], uv_offset: [16, 0] }] }, S1);
+ok('a box-UV cube placed by hand keeps its own offset', r.ok && r.result.cubes[0].uv_offset.join() === '16,0', r);
+r = await call('place_cube', { uv: 'pack', elements: [
+  { name: 'p1', from: [0, 0, 0], to: [4, 4, 4] }, { name: 'p2', from: [0, 0, 0], to: [4, 4, 4] }, { name: 'p3', from: [0, 0, 0], to: [4, 4, 4] },
+] }, S1);
+const packed = r.ok ? r.result.cubes.map((c) => c.uv_offset.join()) : [];
+ok('three packed cubes land in the three free 16x8 rectangles, top-left first, around the one placed by hand',
+  r.ok && packed.join('|') === '0,0|0,8|16,8', JSON.stringify(r.ok ? packed : r));
+ok('  and the readback says they are box UV', r.ok && r.result.cubes.every((c) => Array.isArray(c.uv_offset)), r.ok && JSON.stringify(r.result.cubes[0]));
+r = await call('place_cube', { uv: 'pack', elements: [{ name: 'p4', from: [0, 0, 0], to: [4, 4, 4] }] }, S1);
+ok('a fifth 16x8 footprint on a full 32x16 sheet is refused, with the size it needs and the fix',
+  !r.ok && /sheet full: cube "p4" needs a 16x8 box-UV footprint/.test(r.error) && /4 box-UV cube\(s\) on it/.test(r.error) && /texture op:resize/.test(r.error), r);
+r = await call('place_cube', { uv: 'pack', elements: [{ name: 'thin', from: [0, 0, 0], to: [2, 4, 2] }] }, S1);
+ok('  while a smaller footprint (8x6) still finds no room on a sheet the four 16x8s fill exactly', !r.ok && /sheet full/.test(r.error), r);
+r = await call('project', { op: 'set', texture_height: 32 }, S1);
+r = await call('place_cube', { uv: 'pack', elements: [{ name: 'p5', from: [0, 0, 0], to: [4, 4, 4] }] }, S1);
+ok('grow the sheet and the same cube packs into the new rows', r.ok && r.result.cubes[0].uv_offset.join() === '0,16', r);
+r = await call('place_cube', { uv: 'pack', elements: [{ name: 'half', from: [0, 0, 0], to: [3, 4.5, 2] }] }, S1);
+ok('a fractional size is packed on a whole-texel footprint (10x7 for 3x4.5x2), so its rows never straddle a neighbour',
+  r.ok && r.result.cubes[0].uv_offset.join() === '16,16', r);
+r = await call('project', { op: 'close', force: true }, S1);
+
 g.__plugin.onunload();
 ok('unload restores the removeAllBackups Blockbench shipped', g.AutoBackup.removeAllBackups.name === 'removeAllBackups' && g.window.onbeforeunload === null, g.AutoBackup.removeAllBackups.name);
 ok('unload removes the global', !g.mcptoolkitBridge);
+ok('unload removes the storage listener it registered', (g.window.listeners.storage || []).length === 0, g.window.listeners.storage);
 
 console.log('\n' + (failures ? failures + ' FAILED of ' + count : 'all ' + count + ' ok'));
 process.exit(failures ? 1 : 0);

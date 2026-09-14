@@ -12,18 +12,23 @@ task to the one document to read. [`mcp-toolkit/RELEASE.md`](mcp-toolkit/RELEASE
 ships, what has been verified on the code that ships, and what is still open - and where a claim
 rests on a test log, it names the log.
 
-This is **release 2**: toolkit 0.146.0, MCP server 0.73.0, convention plugin 0.7.0, Minecraft 26.2.
-**The game now speaks MCP itself.** `POST http://127.0.0.1:<port>/mcp` is an MCP server hosted in the
-mod jar - no Node, nothing to install, nothing to spawn: point any client that speaks MCP over HTTP
-straight at that URL, and `/mcp/<surface>` chooses which slice of the tools it gets. Type `/mmcp mcp`
-in game and it prints the address and the line that registers it. The Node server is unchanged and
-remains the fuller path, because it is there whether or not the game is
-(`mcp-toolkit/docs/platform/IN_JAR_MCP_DESIGN.md` has the table).
+This is **release 3**: toolkit 0.157.0, MCP server 0.79.0, convention plugin 0.7.0, Minecraft 26.2.
+**A file you save is in the running game a few seconds later, with nothing called.** `mmcpd` is a
+daemon that hosts the MCP server for every project on the machine - so registering a client is a URL
+rather than a command and an environment, and your client spawns nothing - and it watches each
+registered project's `src/`: a texture, a datapack file, a screen document or a Java method body you
+write lands by the route that kind of change needs, batched, with an identical rewrite refused before
+any game is dialled. Every change is a row you can read, on the daemon's feed and as an `edit` event
+inside the game, saying what became of it - `swapped`, `refused`, `not-yet`, `pending-rebuild`. The
+same daemon now serves a cockpit at `/ui/`. The stdio server and the in-jar door
+(`POST http://127.0.0.1:<port>/mcp`, no Node, nothing to install) are both unchanged and both still
+supported - `mcp-toolkit/docs/platform/HOST_DESIGN.md` and `IN_JAR_MCP_DESIGN.md` have the tables.
 
-The whole probe battery was re-run at this version on 2026-09-11 - 109 files, 916 pass / 1 fail, the
-one red green on an isolated rerun - and **107 of the 108 files it shares with release 1's battery
-scored identically**, which is the evidence that this version changed nothing it did not mean to
-(`RELEASE.md` 2.10; 2.8 and 2.9 are release 1's two loader arms, 108 files, 903/0 and 901/8).
+The whole probe battery was re-run at this version on 2026-09-14 - 112 files, 950 pass / 1 fail, the
+one red green on an isolated rerun - and **108 of the 109 files it shares with release 2's battery
+scored identically**, with every difference accounted for: three new probe files and eight new cases
+in a fourth. No shared file lost a test. That is the evidence this version changed nothing it did not
+mean to (`RELEASE.md` 2.11).
 
 ## License, in short
 

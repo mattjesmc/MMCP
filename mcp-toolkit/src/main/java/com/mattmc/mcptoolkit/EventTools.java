@@ -1,10 +1,22 @@
 package com.mattmc.mcptoolkit;
 
+import com.google.gson.JsonObject;
 import org.jspecify.annotations.Nullable;
 
-/** Registers {@code get_events} — the read side of the unified {@link EventLog}. */
+/**
+ * Registers {@code get_events} — the read side of the unified {@link EventLog} — and
+ * {@code record_edit}, the one write the daemon makes into it (the {@code edit} event of the
+ * co-editing contract, HOST_DESIGN.md section 4.5).
+ */
 public final class EventTools {
     private EventTools() {}
+
+    /** The vocabulary {@code record_edit} accepts for {@code live.result}; anything else is refused. */
+    private static final java.util.Set<String> LIVE_RESULTS = java.util.Set.of(
+        "swapped", "refused", "not-yet", "pending-rebuild", "none");
+    private static final java.util.Set<String> FEEDS = java.util.Set.of("disk", "buffer", "undo");
+    /** A hunk is a summary; a caller that pastes a whole file is cut here, and told so. */
+    private static final int HUNK_CAP = 2_000;
 
     private static final int DEFAULT_LIMIT = 50;
     private static final int MAX_LIMIT = 200;
@@ -77,6 +89,88 @@ public final class EventTools {
                     throw new IllegalStateException("long-poll interrupted");
                 }
             }).withTimeout(DISPATCH_TIMEOUT_SECONDS));
+
+        // The daemon's write into the stream. The event's shape is fixed here rather than taken as
+        // handed over, because a stream every session reads is not a place for free-form rows: the
+        // result vocabulary is checked, the hunk is capped, and the record says who wrote it
+        // (`session`, stamped from the caller's identity) so a row that was not the daemon's is
+        // visible as such. Privileged for the same reason - it is a write into every session's
+        // senses, not an observation.
+        McpTools.register(ToolDef.of(
+            "record_edit",
+            "Append an `edit` event to the event stream: a file in a project changed and this is what "
+                + "became of it in the running game. The daemon (mmcpd) calls this after landing a "
+                + "change it saw on disk; call it yourself only to announce an edit you landed by "
+                + "hand so other sessions on this game learn of it. `live.result` is one of swapped | "
+                + "refused | not-yet | pending-rebuild | none. Returns the event id.",
+            Schemas.objectOpt(Schemas.object(
+                "project", Schemas.str("Registry name of the project the file belongs to."),
+                "path", Schemas.str("The file, relative to the project root, forward slashes."),
+                "feed", Schemas.str("Which feed saw it: disk | buffer | undo."),
+                "op", Schemas.str("write | delete."),
+                "by", freeObject("Who made the edit, as far as the feed can tell: "
+                    + "{kind: human|session|unknown, id?}."),
+                "hunk", Schemas.str("A few lines of diff summary; capped at 2000 characters."),
+                "live", freeObject("The liveness act and its verdict: {act, result, ms?, error?}.")),
+                "op", "by", "hunk"),
+            ExecutionContext.ANY,
+            Mechanism.PRIVILEGED,
+            (ctx, a) -> {
+                String feed = required(a, "feed");
+                if (!FEEDS.contains(feed)) {
+                    throw new IllegalArgumentException("feed must be one of disk, buffer, undo (got '"
+                        + feed + "')");
+                }
+                JsonObject live = a.has("live") && a.get("live").isJsonObject()
+                    ? a.getAsJsonObject("live").deepCopy() : new JsonObject();
+                String result = live.has("result") && live.get("result").isJsonPrimitive()
+                    ? live.get("result").getAsString() : null;
+                if (result == null || !LIVE_RESULTS.contains(result)) {
+                    throw new IllegalArgumentException("live.result must be one of " + LIVE_RESULTS
+                        + " (got " + (result == null ? "nothing" : "'" + result + "'") + ")");
+                }
+                JsonObject d = new JsonObject();
+                d.addProperty("project", required(a, "project"));
+                d.addProperty("path", required(a, "path"));
+                d.addProperty("feed", feed);
+                d.addProperty("op", a.has("op") && a.get("op").isJsonPrimitive()
+                    ? a.get("op").getAsString() : "write");
+                if (a.has("by") && a.get("by").isJsonObject()) {
+                    d.add("by", a.getAsJsonObject("by").deepCopy());
+                }
+                if (a.has("hunk") && a.get("hunk").isJsonPrimitive()) {
+                    String hunk = a.get("hunk").getAsString();
+                    if (hunk.length() > HUNK_CAP) {
+                        hunk = hunk.substring(0, HUNK_CAP) + "\n... (hunk cut at " + HUNK_CAP
+                            + " characters: a hunk is a summary, not the file)";
+                    }
+                    d.addProperty("hunk", hunk);
+                }
+                d.add("live", live);
+                if (ctx.sessionId() != null) {
+                    d.addProperty("session", ctx.sessionId());
+                }
+                long id = EventLog.emit("edit", d);
+                JsonObject r = new JsonObject();
+                r.addProperty("event_id", id);
+                r.addProperty("type", "edit");
+                return r;
+            }));
+    }
+
+    /** An object-typed property with free keys: the shapes above are documented, not enforced. */
+    private static JsonObject freeObject(final String description) {
+        JsonObject o = new JsonObject();
+        o.addProperty("type", "object");
+        o.addProperty("description", description);
+        return o;
+    }
+
+    private static String required(final JsonObject a, final String key) {
+        if (!a.has(key) || !a.get(key).isJsonPrimitive() || a.get(key).getAsString().isBlank()) {
+            throw new IllegalArgumentException("'" + key + "' is required");
+        }
+        return a.get(key).getAsString();
     }
 
     /**

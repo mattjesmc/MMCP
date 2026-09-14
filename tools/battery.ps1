@@ -196,7 +196,15 @@ $CHUNKS = [ordered]@{
           # all: every other probe in this suite drives `/cmd`, so until this line a regression in
           # `/mcp` had nothing red to land on. Surface-shaped like its neighbours here - it needs a
           # server to answer `ping` and `run_command`, stages nothing and owns no site.
-          'in-jar-mcp')
+          'in-jar-mcp',
+          # `daemon` and `watcher` (0.155.0 / 0.156.0, HOST_DESIGN.md steps 1 and 2) are the THIRD
+          # door: mmcpd, the daemon that hosts the bridge, and its disk feed. Both run against
+          # throwaway roots and a FAKE bridge on ports nothing listens on, so they need no game and
+          # own no site - surface-shaped like `in-jar-mcp`, and declared here the day the WARN would
+          # otherwise have named them. Note: a REAL mmcpd must not be running during a battery; its
+          # watcher would push a probe's src/ writes into the game under it. `supervisor`
+          # (0.157.0, the run cycles and the cockpit's routes) runs against a FAKE rebuild.ps1.
+          'daemon', 'watcher', 'supervisor')
     # c -- perception: what the body can see, sense, locate and summarise about the world.
     c = @('attention-cost', 'block-watch', 'check-path-r1', 'drown-net', 'fan-density', 'hazards',
           'locate', 'pattern-search', 'perception', 'perception-coverage', 'perception-mode',

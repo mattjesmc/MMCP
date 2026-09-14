@@ -1,5 +1,37 @@
 # Session isolation in Blockbench: the tab, the window, the process
 
+**Status 2026-09-14: read this paragraph first, because the daemon changed which half of this
+record applies to you.** Since 0.155.0 (`HOST_DESIGN.md` section 11) a session that comes in
+through `mmcpd` does not take a window out of a pool at all - it gets a **Blockbench process of its
+own**, `Blockbench.exe --userData ~/.mmcp/bb/<session>`, seeded from a template of the person's
+profile and spawned on that session's first Blockbench call. In that mode the plugin runs **owned**
+(`MCPTK_BLOCKBENCH_PORT`, `MCPTK_BLOCKBENCH_OWNER` in its environment; `GET /hello` says `owned`):
+it binds the port it was handed, never docks, never beats, never sweeps, and takes a claim from its
+owner alone. So the dock, the roster, the ceiling on agent windows, claiming and eviction - sections
+6 and 11 to 13 - are the STDIO path's machinery, and they are unchanged and still in use there.
+Everything about what isolation *means* (sections 1 to 5, 9) applies to both, and the owner's
+correction that produced the instance model is recorded in `HOST_DESIGN.md` section 11.
+
+**Status 2026-09-13: section 13 is BUILT at toolkit 0.148.0 / plugin 0.11.0 / shim 0.75.0** (13.4):
+the review of what a person still could not do to a window their session was in. Settings through
+the store, the eviction signal on `/cmd` replies, a visible queue, and the plugin door's own
+`Origin` rule copied from `BridgeOrigin` in JavaScript - the measurements that decided it were
+taken on the running 0.10.0 dock before anything was built, and the conformance check was 41 red on
+0.10.0 and green on 0.11.0. Eviction is SAID and not enforced.
+
+**Status 2026-09-12: section 12 is BUILT and RUN LIVE at toolkit 0.147.0 / plugin 0.10.0 / shim
+0.74.0, and it is where to start. Section 11's dock had been running for hours on a machine whose
+owner reported no control screen anywhere - because a `Panel` is 0x0 in a window with no project, and
+the dock never has one (12.1). Section 11.13's fix for the windows being DEMANDED had reached nothing
+there either, because the demanding shim is a copy pinned in a consumer repo and a running session
+keeps it for days - so the ceiling now lives in the plugin, the only part a Blockbench restart
+updates (12.2, 12.4). A claim was only ever asked whether its socket was open, which is why empty
+windows held by two-day-idle sessions could not die (12.3). And the dock is the window a person
+leaves in the background, which is exactly the window whose timers Chromium freezes (12.7). The live
+run then taught one lesson three times - count the ASKS, not the windows, because a window that has
+been asked for does not exist yet (12.4). 320 plugin-green, 18 in `blockbench-surface`, nine
+falsifiers. Everything below this paragraph is the earlier history, unchanged.**
+
 **Status 2026-09-10: section 11 - THE MCP DOCK - is BUILT and RUN LIVE at toolkit 0.144.0 / plugin
 0.8.0 / shim 0.72.0. Section 11 is the record: what a live scan found (six windows serving, every one
 empty, not one with a death condition that could fire), why the last-window guard was innocent, the
@@ -842,3 +874,540 @@ Built at toolkit 0.145.0 / plugin 0.9.0 / shim 0.73.0. 274 plugin-green (6 new),
 `blockbench-surface` (1 new), and both new regressions were falsified against the old code: the
 idle-session probe goes red under eager allocation, and the two-dock probe leaves two docks each
 listing the other.
+
+---
+
+## 12. The surfaces, the ceiling, and a claim that was only ever asked one question (2026-09-12)
+
+Two days after the section 11 work, from the person who owns the machine: *"2 days after the last
+authoring work when I launch blockbench still 8 windows open... Non of these sessions have a project
+open. Nowhere are mcp control screen... setting button does not work. 7 mcp bridge entries are taking
+over the tools menu."*
+
+Section 11.13 had already found the line that was MAKING windows, and fixed it. This section is about
+why that fix reached nothing on this machine, and why the dock it fixed was invisible the whole time.
+Everything below was measured in the running app before anything was written.
+
+### 12.1 The dock was running, and a panel cannot be seen where the dock lives
+
+`GET /dock` on port 25803 answered with a complete roster: three agent windows, their holders, their
+ports, nothing open in any of them. The dock had been up for hours. The person had reported no
+control screen anywhere, and both statements were true.
+
+**The dock's UI was a `Panel`, and Blockbench hides the sidebars behind the start screen.** Measured
+in one call, both ways: with a project open the dock panel is **544x93**, connected, visible; with no
+project open it is **0x0** and `#start_screen` is `display: block` over the whole workspace. The dock
+is designed never to hold a project. So its entire interface was unreachable in the only state it is
+ever in - and the same was true of the status panel in every empty agent window, which is why a row
+of identical blank windows offered a person nothing at all.
+
+What IS visible there is a start-screen section. `addStartScreenSection(id, data)` is a global in
+5.1.6 (`Object.assign(window, {StartScreen, addStartScreenSection})`), returns a handle with
+`delete()`, inserts at the top of `#start_screen > content`, and takes an icon, headings, markdown
+lines and BUTTONS WITH CLICK HANDLERS. A spike of the roster rendered **1000x211** with no project
+open, topmost and hit-testable by `elementFromPoint`; the built version measures 1000x606 as the
+dock, listing every window with Focus / Adopt / Release / Close and one button that closes every
+empty agent window at once.
+
+Two rules came out of building it. The MODEL is separate from the painting - `startScreenModel()`
+returns rows and buttons as data, each button carrying a function - so what a person is shown and can
+press is assertable headlessly, which a DOM in a renderer is not. And nothing off the wire goes in as
+markup: `addStartScreenSection` passes `text` through `pureMarked`, so it is given only static
+strings and every dynamic value is appended as `textContent`, the discipline the panels already kept.
+
+### 12.2 A shim fix cannot reach a running session, so the ceiling belongs to the plugin
+
+The three windows were held by `claude.exe` processes from **9 and 10 September, still running** -
+idle terminals - each with a live `node .../run/mcptoolkit/mcp-server/index.mjs` and an open
+`/presence` socket. The code those processes are running was read directly:
+
+```
+ArmorPieces/run/mcptoolkit/mcp-server/upstream/blockbench.mjs:437
+  await reconcileWindow();
+  const w = await resolveWindow();   // claims or CREATES, on the poll cadence
+```
+
+That is section 11.13's line, alive, because **ArmorPieces pins `mcptoolkit_version = '0.140.0'`**.
+The fix shipped at 0.145.0 and never reached it. This is not an ArmorPieces problem; it is the shape
+of the shim: it is a copy extracted into each consumer repo, and a session that started days ago
+keeps the copy it started with for as long as its terminal is open. Two consequences, both seen:
+eight windows within three minutes of a Blockbench launch, and windows reappearing after a person
+closed them.
+
+**The plugin is the only component that everybody's next Blockbench start updates.** So the ceiling
+lives in the plugin, on the route those shims call: `POST /window` now rejoins, then reuses an empty
+agent window, then refuses past a limit, and only then makes one.
+
+### 12.3 A claim was only ever asked whether its socket was open
+
+Every one of those claims read `connected: true`, so `claimHolder()` answered yes, so `sweep()`
+returned early, so nothing could ever close an empty window. **A presence socket is the liveness of a
+PROCESS; it says nothing about whether anybody is working here.**
+
+A claim now has a clock of its own - the last CALL by its holder in this window, not the session's
+`seen`, which presence and every scan refresh. Past `idle_claim_ms` (15 minutes, in Settings) an idle
+claim stops protecting an EMPTY window: the window releases it, reads as `orphan`, is handed to the
+next session that asks, and closes itself after the ordinary grace. A window with a project open is
+never judged by its claim, idle or not - a dropped socket is not consent to destroy work (6.2), and
+neither is a quiet one.
+
+`claimIdle()` is deliberately not folded into `claimHolder()`: a shim reads both, and they answer
+different questions - who the window is for, and whether being for them is still a reason to keep it.
+
+### 12.4 The ceiling, and the windows nobody can see yet
+
+`max_agent_windows` (3, in Settings) counts windows opened FOR agents. A person's windows are never
+counted and never refused. The dock enforces the same limit on `POST /dock/window`, where it can
+count without scanning.
+
+The live run then taught the same lesson three times, and each time the answer was the same shape:
+**count the ASKS, not the windows.** A window that has been asked for does not exist for a second or
+two, so nothing that only looks at windows can be right.
+
+1. **Six windows got past a ceiling of three.** Several stale shims asked inside the same second.
+   Fixed by counting the outstanding asks alongside the agent windows.
+2. **One session held three windows.** It asks on its own poll cadence, and each ask landed in the
+   gap where the previous newborn had already CONSUMED its handoff and was not yet answering on a
+   port - so neither the scan nor the pending list could see it. The handoff and the ask therefore
+   became two records: the handoff is consumed at birth, as it must be, and the ASK expires on its
+   own clock (`birth_ms`). A session with an ask in flight is told one is coming - `ok:true` with no
+   port, which a shim reads as "wait and look", which is what it does anyway - and nothing is made.
+   Both records live in shared storage (section 5), because the asks do not all arrive at the same
+   window.
+3. **A plugin RELOAD ate the handoff meant for a newborn.** From inside, a reload is indistinguishable
+   from a birth: `onload` runs, a port is won, a pending entry is there to consume. So four reloads
+   consumed four asks, and the four windows that did appear registered as the PERSON'S - which the
+   ceiling does not count, so the next ask made another. `sessionStorage` is the one store with
+   exactly the right scope to tell them apart: per window, and it survives a plugin reload. A
+   renderer that has run this plugin before is not a newborn and adopts nothing.
+
+### 12.5 Seven entries, and a label that was a paragraph
+
+The Tools menu carried seven top-level entries, read back from the live menu structure. With two
+other plugins of this workspace in the same menu it took the menu over. An Action with a `children`
+array is a submenu - `armorpieces.js` in this workspace does exactly this, and says why - so there is
+one entry now, `MCP Toolkit Bridge (port 25804)`, which also makes a stack of windows tellable apart
+from the menu alone. Start and Stop are ONE entry that carries the state (`Action.setName`, on the
+prototype, checked live), and the two dock entries are one: "open it" and "show me the one that is
+already open" are the same wish.
+
+The Settings dialog did not fit on screen because a label held a parenthesis-laden sentence. Labels
+are short now, the explaining is one `info` line, `width: 540`, and the four numbers a person might
+want to change are there. Only a changed base PORT restarts the bridge; the other three are read
+live, because a restart makes this window give up the port that is its name.
+
+### 12.6 A window with no project could not be driven at all
+
+Every tool resolved a project first, so `risky_eval` and `trigger_action` answered "no project is
+open" in the dock - the window that governs all the others was unobservable to an agent for the same
+reason its panel was invisible to a person. Every probe of it in this investigation had to open a
+throwaway project first.
+
+Tools that drive THE APP rather than a model now need a project only when there is one. A project
+that IS open is resolved exactly as before, `held_by` guard included: this widens the gate for an
+empty window and changes nothing about a window somebody is working in.
+
+### 12.7 Chromium freezes the timers of the window this design leaves in the background
+
+The roster kept listing windows that had closed minutes earlier. The cause is not in this code:
+
+**Every bridge window reports `visibilityState: "hidden"`** - they are covered, or minimised - and
+Chromium gives a window hidden for more than five minutes INTENSIVE THROTTLING, a floor of one timer
+callback a minute. Measured: a 500ms interval ticked **0 times in 8 seconds** in the dock, against 6
+in a window hidden for less. The dock is by definition the window a person leaves in the background,
+so it is the window that gets frozen hardest.
+
+Three things follow, all built:
+
+- `BEAT_STALE_MS` was 20 seconds, which under that floor called every background window *"wedged, or
+  an older plugin"* - the ordinary state of every window here. It is **150 seconds**, and the number
+  was arrived at twice: 90 seconds was tried first and a healthy background window still read SILENT
+  at it, because the floor is "at most once a minute" and says nothing about WHERE in the minute.
+  Nothing acts on `silent` automatically, so being generous costs only that a genuinely wedged window
+  is named a minute later. The diagnostic in 11.8 is only as good as the clock underneath it.
+- **The beat clock outranks a stale `serving`.** `serving` is the SCAN's field, and a frozen dock may
+  not have scanned for minutes; a row that has ever beaten and then said nothing for three staleness
+  windows is `gone` whatever the last scan believed.
+- **The roster is true by FILTERING, not by a timer.** `rosterRows()` drops `gone` rows, and an
+  incoming beat prunes them - and a beat is an HTTP request, which nothing throttles. This is the
+  same argument 11.8 made for choosing push over poll, now with a measurement behind it: what keeps
+  the dock's picture current is the requests arriving at it, never its own clock.
+
+### 12.8 As built
+
+Toolkit 0.147.0 / plugin 0.10.0 / shim 0.74.0. 320 plugin-green (46 new) and 18 in
+`blockbench-surface` (2 new). Nine falsifiers, each run against the old code: claims that never go
+idle leave the empty window alive; a `POST /window` that neither reuses nor counts opens one every
+time; an ask in flight that is not counted lets a fourth window through a ceiling of three; seven
+loose menu registrations; a row retired only by a scan; a 20-second staleness threshold; a reload
+that adopts like a birth; a second ask from one session that makes a second window; and an ask
+record forgotten when the handoff is consumed - which needed the GAP modelled in the harness (the
+pending list emptied the way a newborn empties it) before it could go red at all, because in one
+process the ask and the adoption are never really apart.
+
+Driven live at the end: eleven windows down to two, from the dock's own start screen, one press per
+row - and the sprawl those eleven came from was this session's own reload storm, which is finding 3
+above.
+
+The shim side is two changes: a port in a `POST /window` answer is used directly, which deletes the
+scan-and-race `askForWindow` otherwise needs, and a refusal is written to stderr with the plugin's
+own sentence rather than silently becoming a shared window.
+
+**One thing this investigation found about its own harness.** The plugin suite reset its base port to
+the shipped 25801 when it was done, and its next `findDock` scan then reached the developer's OWN
+dock and registered itself in its roster - four ephemeral ports in a live roster, which are test
+processes. A test must not be able to appear in the app it is testing; the base is left where each
+section put it now.
+
+**What this does not fix.** A window running plugin 0.9.0 or earlier still makes windows on request,
+so the ceiling only binds once every window in the range has been restarted onto 0.10.0 - and a
+consumer repo pinned below toolkit 0.147.0 still has a shim that asks on a poll. The ceiling is what
+makes that harmless rather than unbounded. Settings and plugin permissions remain last-writer-wins
+across windows (11.10), and `connect` - an agent beside a person in one tab - is still not built.
+
+## 13. The review of 2026-09-13: what a person still cannot do, and the order of work
+
+A read of plugin 0.10.0, the shim adapter at 0.74.0 and the two companion plugins, done as a
+reviewer and not as the builder, with nothing built. Every finding below comes from reading; the
+items marked MEASURE FIRST need a live number before they are designed, and the list at the end is
+the live run that closes the section. Sections 10 to 12 each fixed what the previous live run had
+found; this one fixes what the design has been carrying since section 6 without noticing.
+
+### 13.1 The findings, and the thesis they share
+
+**A claim steers discovery and nothing else, so nothing a person does to a window reaches the
+session in it.** Section 6.3 chose that on purpose - a window each was meant to stop NEEDING the
+refusal - and section 12.3 then made claims expire, which turned the choice into a hole. The dock's
+Release, the menu's take-back, and the fifteen-minute recycle all drop `claimedBy`
+(`mcptoolkit_bridge.js` `setRole`, `setAllowAgents`, `releaseDeadClaim`) while the shim keeps its
+cached window and keeps calling into it: `reconcileWindow` runs only while presence is CLOSED
+(`blockbench.mjs`), which for a live session is never, and `/cmd` replies carry no word about the
+window at all. After a recycle two sessions share one window and the evicted one's `ping` still
+answers `held: "this session"`, because that field is the shim's own cache. The only lever that
+does reach a session is Stop the bridge, which evicts every session in the window at once and drops
+their bindings with it.
+
+**A call the shim gave up on still runs.** One queue for every session (`enqueue`), a two-minute
+ceiling in the shim (`CALL_TIMEOUT_MS`), and no check in `perform` that the request is still open:
+a `place_cube` queued behind a long push is executed after the agent was told it failed, and the
+retry doubles it. The timeout sentence blames a dialog; the truth is usually the queue, and nothing
+on `/hello` says what is running or how many are waiting.
+
+**Settings are per window until a restart, and the last save from any window wins.** `settings` is
+read once at `onload` and every window enforces its own copy, so a ceiling changed in window A is
+not the ceiling the dock applies; and `saveSettings` writes the whole stale copy back, so the next
+`dock_port` hint or hand-over saved from another window overwrites A's change. The `PENDING_KEY`
+comment names this hazard for the handoff list and the settings themselves fall into it.
+
+**Smaller, each one line to state.** `stop()` nulls `boundPort` before comparing it to `dock_port`,
+so a stopped dock never clears its hint, and `start()` restarts beats and dock search only for
+non-docks, so a dock that is stopped and started keeps `isDock` and never scans again. "Make this
+window the MCP Dock" skips the one-dock check "Open the MCP Dock" performs, and the lowest-port rule
+then quietly overrules the window the person chose. The plugin parses the body as JSON whatever the
+content type and never reads `Origin`, where the toolkit's own `/mcp` door refuses non-loopback
+origins (`McpEndpoint.isLoopbackOrigin`) - a page in a browser can blind-POST `risky_eval` or
+`POST /close {force:true}` as a request that needs no preflight; the game's `/cmd` door shares the
+gap. `peekBase` rescans sixteen ports on every poll of every session that holds no window (the
+throttle covers only an EMPTY result), which with the game down is sixteen connects every three
+seconds per idle session. A handoff lives 120 s and its ask is counted for 20 s, so a window a person
+opens by hand in the gap becomes an agent window pre-claimed for a session that gave up. When a
+person closes an agent's window by hand the agent reads "Blockbench unreachable, is it open?" and its
+next call lands in a fresh window with "no project is open"; nothing says the window went away. The
+dock's Adopt button sits on a person's live window with work in it and does not say it makes that
+window claimable. Status... is a JSON dump. `LIVE_MODDING.md` describes plugin 0.7.0. And the
+start-screen section has only ever been measured after a runtime load of the plugin, never on a
+cold boot with autostart.
+
+**The companion plugins have the same shape of fault one layer down.** `bridge: null` and
+`project: null` fall through to a stored URL and the active tab in both `mcptoolkit_sync.js`
+(`bridgeFor`, `projectOf`) and `mcptoolkit_entity.js`: the refuse-on-null rule of 0.140.0 holds for
+an ABSENT key and not for the `GAME` an agent dutifully passes when it is null. `target` is never
+validated, so `target:'game'` writes nothing and answers `ok:true, pushed:N`. The entity panel builds
+`state.bridge` and never renders the field, so a person is told to pass `bridge: GAME` inside
+`risky_eval`, which they cannot do. The headless settings call replaces whole per-project maps; a
+`stage_entity` failure hides a push that landed; the sync default namespace is the literal
+`villagejobs`; two sessions on one game overwrite each other's `preview` entity.
+
+### 13.2 Design decisions
+
+**Eviction is said, not enforced.** Claims stay unenforced on `/cmd` (6.3 stands), but the plugin
+tells the truth about them: when the caller is not this window's holder and the window is an agent
+window, every `/cmd` reply carries `window: {port, held_by, note}` - the same place and shape as
+`sharedIdNote`, stamped only while the condition holds. The shim reads it, forgets `windowState`,
+closes presence, and appends the note to the reply the agent sees: which window it lost, to whom,
+that the next call resolves a window of its own, and that a project still open in the old window is
+out of reach unless a person moves it. `ping` stops reading the cache alone: `held` is what the last
+reply or the presence line said. The recycle path additionally closes the evicted session's presence
+responses in that window, so a shim that is mid-poll rather than mid-call also notices through the
+route it already has (`reconcileWindow`). What this does NOT do: stop the call that carried the news.
+That call runs, in the window it was sent to, because refusing it would be enforcing the claim.
+
+**A queued call is dropped when its caller is gone, and the queue is visible.** `perform` checks the
+request before running (`req.destroyed || res.writableEnded`) and skips with a `recent` entry that
+says so; `/hello` and the status panel carry `queue: {running: {name, session, s}, waiting: N}`; on a
+timeout the shim asks `/hello` once and reports what it finds - "Blockbench is running `risky_eval`
+from session X for 130 s; this call was queued behind it and has been dropped" - rather than the
+dialog sentence, which stays only for the case where nothing is running. The ceiling stays at two
+minutes; what changes is that it is now true.
+
+**Settings live in the store, not in the window.** `saveSettings` reloads before it merges, and
+every window listens to the `storage` event - which fires in every OTHER window of the same origin
+when `localStorage` changes, and is exactly the cross-window channel this design has been lacking
+since section 5 - and reloads on it. The readers (`maxAgentWindows()`, `idleMs()`, the rest) then
+see one value everywhere within the same tick. The dialog's confirmation names the windows the
+change reaches ("in every window"). MEASURE FIRST, in the live run: that the event does fire between
+two Blockbench windows, since both stubs share one process.
+
+**A dock survives an internal restart and not an explicit stop.** The base-port change in Settings
+restarts through one path that keeps the role and restarts the scan; Stop the bridge from the menu
+resigns the dock (a dock with no door is not the dock - the comment at `stop()` already says so),
+removes its panel, and says so in the quick message. The `boundPort` ordering bug goes with it.
+"Make this window the MCP Dock" asks `whereIsDock` first and refuses with the port, as Open does.
+
+**The door refuses a browser.** MEASURE FIRST: what `Origin` the Blockbench renderer sends on its
+own `reach()` calls (the dock's beats are cross-window `fetch`es from a renderer whose origin is
+`file:` or `app:`, and a wrong rule here breaks the dock). Then: a request with an `Origin` that is
+neither absent nor loopback nor the renderer's own is refused with 403 and one sentence, the same
+rule as `McpEndpoint.isLoopbackOrigin`; the game's `/cmd` door gets the same rule in the same
+release, since it is the same fault. No token: a token is a secret the person would have to carry
+into a curl, and the threat here is a browser tab, not a local process.
+
+**An idle session asks one window, not sixteen.** `peekBase` remembers the base it last read the
+manifest from and re-asks only it; the full scan runs when that one fails or at most once a minute,
+so a Blockbench that changed shape is still noticed inside the watcher's own cadence.
+
+**A handoff lives as long as its ask.** `PENDING_TTL_MS` becomes a function of `birthMs()`, and the
+plugin that gives up an ask (`dropAsked`) drops the handoff with it.
+
+**A lost window is named.** On an unreachable `/cmd` the shim scans once: if other windows answer,
+the sentence is "window N (port P) is gone - closed by hand? - Blockbench is still open and the next
+call gets a window of its own; work that was unsaved there is lost unless the person kept it",
+and only when nothing answers is it "Blockbench unreachable".
+
+**The dock's verbs say what they do.** Adopt becomes "Give to agents" and Release "Take back"; on a
+row with a project open, Give to agents asks once. Status... is painted from the same rows as the
+start screen, with the raw JSON behind one button.
+
+**The companion plugins refuse an explicit null.** `bridgeFor` and `projectOf` distinguish
+`'bridge' in opts && opts.bridge == null` from an absent key and refuse the former with the sentence
+that names `GAME`; `target` is checked against its three values; the entity panel renders the bridge
+field it already models; the headless settings call merges per-project maps the way the panel does;
+a stage failure answers `ok:false` WITH the `pushed` and `model` that landed; the sync default
+namespace goes and the call refuses without one (the dialog pre-fills from the store); the preview
+tag carries the session id when `risky_eval` hands one over, so two sessions on one game stop
+overwriting each other.
+
+### 13.3 Order of work
+
+Five steps, each shippable alone, plugin before shim because a shim fix cannot reach a running
+session (12.2) and a plugin fix reaches every window on the next restart.
+
+1. **Plugin only, no protocol change - plugin 0.11.0.** Settings through the store and the
+   `storage` event; the dock's stop/start and the become-dock check; the handoff TTL; the queue's
+   abort check and `queue` on `/hello`; the dock verbs and the Status dialog. Harness: a second
+   plugin instance in the stub sees a setting the first one saved; a stopped dock's hint is cleared;
+   a request destroyed before its turn is skipped and recorded; the ceiling read in one instance
+   after a change in another. Falsifiers run against 0.10.0 first, as 12.8 did.
+2. **The eviction signal - plugin 0.11.0 and shim 0.75.0 together.** `window` on `/cmd` replies,
+   presence closed on recycle, the shim's forget-and-report, `ping` off the cache, the timeout
+   diagnosis through `/hello`, the lost-window sentence, and `peekBase` remembering. Shim probe:
+   a reply carrying `window.held_by` of another id makes the next call resolve afresh and the text
+   the agent reads name both windows; a timeout with `/hello` reporting a running call names it.
+3. **Origin - after the measurement.** One live probe of the renderer's `Origin` on a `reach()`
+   call, recorded here; then the rule in the plugin and in `BridgeServer`, with a harness check that
+   the dock's own beat still passes and a `curl -H "Origin: https://example.com"` is refused.
+4. **The companion plugins - sync 0.5.0, entity 0.4.0.** The null rule, `target`, the panel field,
+   the map merge, the stage reply, the namespace, the preview tag. Their harnesses pin each.
+5. **Docs and the live run.** `LIVE_MODDING.md` to 0.11.0 and the dock; the README's window
+   paragraph gains the eviction sentence. Then, in the running app, one session each: Release a
+   window under a live session and read what its next call says; let a claim go idle and watch the
+   recycle reach the evicted shim; Stop then Start a dock; a cold boot with autostart, and whether
+   the start-screen section is there before any project is opened; a browser tab posting to `/cmd`
+   and the 403 in the panel's recent calls; two sessions pushing a preview entity into one game.
+
+What no stub reaches, as before: the second realm, and now the `storage` event between real
+windows and the renderer's `Origin` - which is why steps 3 and 5 are measurements and not the end
+of a harness run. Build stops at "compiles and the new contract"; a fresh agent repairs the tests.
+
+### 13.4 As built (2026-09-13, the same day)
+
+Toolkit 0.148.0 / plugin 0.11.0 / shim 0.75.0 / sync 0.5.0 / entity 0.4.0, in the same release as
+the bridge audit (`BRIDGE_AUDIT.md`), which is why step 3's game half is not here: the audit's own
+first finding was the same hole on the game's `/cmd` door, and it landed `BridgeOrigin` on every
+private handler while this was being built. The plugin's door copies its semantics in JavaScript
+(absent, blank or `"null"` allowed; loopback http(s) allowed; anything else 403), because a
+Blockbench plugin cannot call a Java helper.
+
+**The two measurements, taken before anything was built**, both through `risky_eval` on the
+running dock (0.10.0), which is the window that can be driven with nothing open (12.6):
+
+- *Origin.* A listener on an ephemeral port recorded what the renderer sent on a `fetch` GET and a
+  `fetch` POST with a JSON body - the two shapes `reach()` uses. **No `Origin` header at all**,
+  on either; `location.origin` in the renderer is `file://` (Chromium sends `Origin: null` for a
+  `file:` page's cross-origin POST in a browser, and Electron sends nothing). So the dock's beats
+  are the same case as curl and the shim, and the rule the audit chose - absent is allowed - holds
+  here for a second reason.
+- *The `storage` event.* A listener armed in the dock, a write from window 25804, both windows
+  `visibilityState: "hidden"`: the dock received it, and the two writes after it (`setItem` again,
+  then `removeItem` with `newValue: null`) - three of three, with no timer involved, which is why a
+  hidden window's frozen timers (12.7) do not matter to it. A window does not receive its own
+  write, per the spec, and the design needs it not to.
+
+**What the eviction is and is not.** The decision in 13.2 held: no call is refused. What the build
+narrowed is WHICH route says it. The `/cmd` note goes out from any agent window whose holder is not
+the caller; the presence line goes out from the RECYCLE only. The reason is one the review did not
+state: a presence socket is also what keeps that session's PROJECT BINDINGS alive, and a Take back
+or a role change happens to windows with work in them - the harness's own take-back sequence went
+red on the first cut, because severing the socket there dropped a binding the session still held.
+A recycle only ever happens to an empty window, so there is nothing behind the socket to lose, and
+a shim between calls has no other way to hear it. A session SHARING a handed-over window is told
+nothing by the shim on the note: it never held the window, and it was told once on stderr already.
+
+**One thing the build found about the harness.** `isNumLike(0)` is false, so every scan in the
+plugin folded the harness's port 0 to the shipped 25801 while `start` did not: a plugin instance
+listening on an ephemeral port scanned the developer's real range, found their dock at 25803 and
+registered itself in its roster - the symptom 12.8 saw at the END of a run and moved the base for,
+which was half of it. `scanBase()` treats 0 as 0 everywhere.
+
+**And one about the running app.** Blockbench WATCHES a plugin loaded from file and reloads it when
+the file changes: the two agent windows on this machine were on 0.11.0, under new window ids, before
+the harness had finished - every edit to the site-of-record file is a live reload in every window
+that loaded it from there. The system healed itself through the dock (the reloaded windows lost
+their in-memory role, asked the dock, and were told `agent` again with the same holder), which is
+what 11.7 was for; but it means the site-of-record file is not a place to make an edit in two steps,
+and the dock stayed on 0.10.0 through it, so a reload is not guaranteed to reach every window.
+
+**The live run** (step 5), a real shim 0.75.0 spawned under its own session id against the running
+app, the plugin reloaded from file in every window and the dock re-opened from the menu's route
+(`openDock`, through `risky_eval` in an agent window):
+
+- *Take back under a live session.* `POST /role {role:"person"}` on the window the shim held, then
+  the shim's next call: the reply text ended with the note - "window win-4i9ryqpz (port 25802) is
+  not this session's any more (taken back from the MCP Dock): it is held by nobody yet. The next
+  call resolves a window of its own; a project still open here is out of reach unless a person
+  moves it" - stderr carried the same line, and `ping` answered `held: "none"` with `lost` where a
+  moment earlier it had answered `held: "this session"` from its cache. The call that carried the
+  news RAN (it answered "no project is open" before the bracket). **This check found the one defect
+  the harness had not**: the first cut said the note only from an agent window, and a Take back
+  makes the window a person's - so the evicted session went on calling into a person's window with
+  nothing said, which is 13.1's first sentence. The session named by the last eviction is told
+  whatever the window's role is now.
+- *A window of its own.* The next call resolved afresh and `ping` named a window held by this
+  session again.
+- *A browser at the door.* `POST /cmd` with `Origin: https://example.com` answered 403 and one
+  sentence; with `Origin: http://127.0.0.1:1234` the call went through (refused for "no project",
+  which is the gate passing it); the window's recent calls carried `POST /cmd: refused: Origin
+  https://example.com`.
+- *The recycle reaches the evicted shim.* `idle_claim_ms` set to 20 s through the store (restored
+  after); at t+20 s `/hello` answered `claimed_by: null`, and with NO call made in between `ping`
+  answered `held: "none"` with `reason: "recycled: idle 0 min with nothing open"` and stderr had the
+  line - the presence route, the one a shim between calls has.
+- *A dock restarted through its own path stays the dock.* `restart()` on the 0.11.0 dock: it
+  answered `role: "dock"` (the door closes a beat after the reply now, so the reply arrives), re-won
+  25803, rewrote `dock_port`, and its roster refilled within a scan. The explicit Stop from the
+  menu and the cold boot with autostart are the person's to run: both need a click or an app
+  restart, and the harness pins the hint clearing.
+- *Not run:* two sessions pushing a preview entity into one game. It needs a project open in two
+  windows and the dev game; the entity harness pins the per-session tag, and the live half is owed.
+
+Three things the live run showed that are not this section's to fix, recorded so nobody re-finds
+them. (1) `shared_port` is persisted BY PORT (6.5): the store on this machine says 25802, so the
+reloaded ex-dock that happened to re-win 25802 came up `allow_agents: true` and was claimed as a
+person's handed-over window by the first shim to scan - a hand-over given to a window that no longer
+exists is inherited by whatever wins its port. (2) `POST /close` answered `ok:true, closing:true`
+on an empty window and the window stayed: `window.close()` can be a no-op, as `start()`'s comment
+says, and nothing reports it. (3) `whereIsDock` walks sixteen ports SEQUENTIALLY at `reach_ms` each,
+so "Open the MCP Dock" from a window with thirteen silent ports in the range took 17 s to answer;
+`dockScan` already asks the range in parallel and this should too. And the stale ArmorPieces shim
+(pinned 0.140.0) re-made three windows within seconds of their being closed, as 12.2 predicted; the
+ceiling is what kept that at three, and a ghost row of a window closed by hand now stops counting
+against it (only serving rows do) - three ghosts had refused every session a window for the seven
+minutes the roster remembers them.
+
+**The harness**, repaired and extended by a fresh agent as the split requires: 389 plugin-green
+(was 320), 51 sync (was 45, and its run had ended in an uncaught error of its own), 129 entity, 23
+in `blockbench-surface` (was 18). The plugin harness now takes `MCPTK_PLUGIN_PATH`, and every new
+check was run against 0.10.0 first: **41 red on 0.10.0, green on 0.11.0** - the store merge and the
+`storage` listener, a stopped dock's cleared hint, `makeDock` refusing with the port, `restart`
+keeping the dock and rescanning, the handoff living as long as its ask, `queue` on `/hello` and a
+dropped call recorded with its side effect absent (with a control that the same call does run when
+awaited), `SESSION` in scope, the eviction note on results AND on every refusal (an argument
+refusal and an unknown tool answered without it in the first cut, because `perform` resolved the
+session after checking arguments; it is stamped in `call` now), the recycle's `evicted` line, the
+Origin table, the verbs with their `confirm` sentences, `statusModel`. The four new shim probes were
+red on shim 0.74.0: no `window_lost`, no evict line, "Blockbench unreachable" where "is gone" now
+stands, and seven hellos on the second window where an idle session now sends one. A timeout
+probe needed one source change: `MCPTK_BLOCKBENCH_CALL_TIMEOUT_MS` overrides the two-minute
+ceiling, so a probe can read `diagnoseTimeout`'s sentence in 1.5 s. And presence in a freshly
+resolved window opens at the call that landed there, not at the next poll, so a new claim no
+longer rests on `claim_grace_ms` for up to fifteen seconds.
+
+Two things the harness can now guarantee about itself: `fetch` in the stub refuses the shipped
+range outright, so even the 0.10.0 run cannot reach the developer's Blockbench; and a per-project
+map entry can only be removed headlessly by nulling the whole map, which is the one asymmetry the
+merge introduced and is recorded rather than hidden.
+
+### 13.5 The afternoon's live run: the ask, the orphans, and a measurement that lied (2026-09-13)
+
+The entity loop's first run from a brief (`entity-loop/README.md`; the loop half is in
+`LOOP_KIT_DESIGN.md`) also exercised the window protocol from a fresh shim with no dock running -
+the person had closed it - and found the ask path failing on every attempt, in a way none of the
+harnesses model because none of them has a real window to be born.
+
+**What the shim saw, every time:** `no window of this session's own (asked for one and none
+appeared) - sharing port 25802`. What had actually happened: a window WAS born (25803, pre-claimed
+for the asking session, exactly as 11.12's `preClaim` intends), but after the shim had stopped
+waiting; it then stood unclaimed, and closed itself on its 60 s grace once its neighbours answered.
+Two timings, taken by hand:
+
+- `POST /window` itself answered in **12.3 s** and **40.7 s** (two asks, same window). The handler
+  scans the whole range sequentially at `reach_ms` a port, tries `/role` on every empty agent window
+  it sees, records the ask and clicks New Window, and only then answers - and the shim's fetch gave
+  up at `HELLO_TIMEOUT_MS * 4` = 4 s. A timed-out ask still opens the window: the worst of both,
+  a session that shares AND an orphan nobody can find. **Fixed shim-side: `ASK_TIMEOUT_MS` (45 s)
+  is the ask's own timeout.** Nothing else can happen until the plugin answers, so waiting costs
+  nothing but the wait.
+- The born window answered on its port **175 s** and **346 s** after the ask (two births). That is
+  not a wait a shim can take, and it is the plugin's to explain; what was seen alongside it (below)
+  is enough to suspect a hidden newborn's throttled timers walking `listen` up the range one port
+  per throttled tick. Not measured further this pass.
+
+**The orphans.** Three empty agent windows (25803-25805) stood for twenty minutes with
+`claimed_by: null` and never closed, where 10.1's sweep should have taken them at 60 s. `POST
+/close {force:true}` on two of them closed all three within seconds (the third presumably found its
+neighbours gone and went on its own), so the close route works and the sweep is what did not fire -
+consistent with 12.7's frozen timers in a window nobody has ever focused, and with the last-window
+guard reading slow neighbours as absent. A window born without a pending handoff (the ask record
+had expired by the time it bound its port) came up as a PERSON's window (25806) with nobody at it:
+the flip's safe default, and also a window no scanning session may take. Pinned by URL it is used
+regardless (`PINNED` is an instruction), which is how the loop runs were placed in it.
+
+**The measurement that lied, kept so nobody re-derives the wrong finding from it.** `curl` on this
+machine reports ~2.04 s for a refused loopback port (25807, nothing listening) and the same ~2.03 s
+for `GET /hello` on a freshly born, never-focused window, while the older windows answer in 3 ms;
+`POST /focus` on the slow window made it answer in 3 ms, and it was back at 2 s minutes later. Node
+refuses the empty port in 6-64 ms. So the refused-port half is curl's, and the slow-window half
+cannot be told apart from it until it is re-measured from node against a window in that state.
+The plugin's own scans run in the renderer through `fetch`, not curl, so 13.4's 17 s `whereIsDock`
+is still real evidence; the "occluded windows answer in 2 s" reading is NOT established. Time
+bridge behaviour from node, never from curl.
+
+**Owed, plugin-side, for the next pass:** why a newborn takes minutes to bind (instrument `start()`
+with timestamps into the window's recent-calls list); the sweep in a never-focused window (a beat
+from the dock, or `/hello` traffic, as the clock rather than `setInterval`, the same move 12.7 made
+for the roster); and whether `openWindow` should answer BEFORE clicking New Window, with the ask
+recorded, so the shim's wait is the only wait.
+
+**13.5a A launcher's claim lapses while a model thinks (same afternoon).** A run pinned to a fresh
+agent window by its launcher (`POST /claim` from the driver, no socket behind it, so a two-minute
+hold) whose model thought for three and a half minutes before its first call found the window
+gone: the hold lapsed at two minutes, the empty agent window swept itself at three, and the first
+call answered "Blockbench unreachable". A pinned window is an instruction, and the natural rule is
+that the shim CLAIMS AND HOLDS IT AT DISCOVERY - but probe 3 of `blockbench-surface` pins the
+opposite for a pinned URL ("reading a tool list registers nothing"), written for 11.13's scanning
+rule and using a pin as its convenience, and a first cut of the change opened presence without a
+claim registering in the stub. Left OWED with that shape stated; the driver keeps the claim alive
+meanwhile by re-claiming under the same id every 45 s until the session ends (a rejoin, harmless
+once the shim holds the window). Two shim fixes that did land: `ASK_TIMEOUT_MS` (above) and a
+relative `path` in any Blockbench call resolved against the workspace before it leaves (shim
+0.76.0, probe 19).

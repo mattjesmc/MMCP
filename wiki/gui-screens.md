@@ -171,8 +171,10 @@ one index space or get a `rows` block per list, and answering that wrong changes
 session has already learned.
 
 **A container screen cannot be constructed by tool** — it needs a server-side menu. For those, the
-loop is: edit the layout code, `compileJava`, `hotswap_class`, then **re-interact with the block** to
-open the screen again. Title-screen-reachable screens can just be `open_screen`ed.
+loop is: edit the layout code, `hotswap_class {class: "...", compile: true, reinit: true}`, and the
+open screen rebuilds its own widgets in place; without `reinit` the screen keeps the widgets its old
+`init()` built, so **re-interact with the block** to open it again. Title-screen-reachable screens
+can just be `open_screen`ed.
 
 ## An agent session
 
@@ -225,7 +227,8 @@ not hotswap the screen.
 **List rows cannot be named.** Raw x/y only, and `unenumerated_listeners` tells you how many the tree
 could not name.
 
-**A container screen cannot be opened by tool.** Re-interact with the block after a hotswap.
+**A container screen cannot be opened by tool.** Pass `reinit: true` with the hotswap to rebuild the
+open screen in place, or re-interact with the block.
 
 **`ui_doc lint` needs no game.** Which makes it free, and a tier-0 check.
 

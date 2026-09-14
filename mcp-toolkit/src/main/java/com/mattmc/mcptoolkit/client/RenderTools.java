@@ -211,6 +211,15 @@ public final class RenderTools {
             throw new IllegalStateException(
                 "the client is still loading; nothing would be extracted into the frame");
         }
+        // A LOADING OVERLAY IS NOT THE LEVEL. Behind it the chunk meshes and the entity bakes are
+        // being rebuilt after a resource reload; a frame taken now is sky, or an error cube where
+        // the model will be (the animation loop's first run, 2026-09-13). Refuse rather than lie,
+        // in this tool's own manner; `reload_resources` now answers only once the overlay is gone,
+        // so a caller that waited for it never sees this.
+        if (mc.gui.overlay() != null) {
+            throw new IllegalStateException(
+                "a loading overlay is on screen (a resource reload is finishing); wait for reload_resources to answer, or retry in a second");
+        }
         // A minimized window is NOT a refusal. It was one until 0.134.0, on a reading of
         // Minecraft.java:1243 as gating the whole frame; the gate is only around acquiring the window
         // surface, and this pass never touches the surface — it draws into the main render target

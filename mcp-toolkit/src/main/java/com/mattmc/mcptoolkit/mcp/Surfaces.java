@@ -95,6 +95,8 @@ public final class Surfaces {
             "  hide          [names] - remove these, applied after keep",
             "  instructions  a paragraph served to the model as this server's `instructions`",
             "  description   one line, for /mmcp mcp",
+            "  legal         true = a PLAYER-LEGAL surface: tools that can read past what a body",
+            "                could perceive answer as a body would. Inherited from 'base'.",
             "",
             "A name here that matches a built-in REPLACES it (and says so in the log).",
             "This file is read once, at game start."
@@ -139,7 +141,9 @@ public final class Surfaces {
                     configFile, e.toString());
             }
         }
-        String chosen = defaultName;
+        // Folded like every other surface name (see readInto): mcp.surface=Build must find the
+        // surface the file declared as "Build", which is installed — and addressed — as "build".
+        String chosen = defaultName.toLowerCase(Locale.ROOT);
         if (!all.containsKey(chosen)) {
             McpToolkit.LOGGER.warn("[MCP Toolkit] mcp.surface \"{}\" is not a surface (known: {}); "
                 + "serving \"{}\" at /mcp", chosen, String.join(", ", all.keySet()), DEFAULT_SURFACE);
@@ -167,14 +171,26 @@ public final class Surfaces {
             return;
         }
         for (Map.Entry<String, JsonElement> e : root.getAsJsonObject("surfaces").entrySet()) {
-            String name = e.getKey();
-            if (name.startsWith("//") || !e.getValue().isJsonObject()) {
+            String asWritten = e.getKey();
+            if (asWritten.startsWith("//") || !e.getValue().isJsonObject()) {
                 continue;
             }
-            if (!isLegalName(name)) {
+            if (!isLegalName(asWritten)) {
                 McpToolkit.LOGGER.warn("[MCP Toolkit] {}: surface name \"{}\" skipped — a surface is a "
-                    + "URL path segment, so it must be letters, digits, '-' or '_'", where, name);
+                    + "URL path segment, so it must be letters, digits, '-' or '_'", where, asWritten);
                 continue;
+            }
+            // Folded ONCE, here, because resolve() looks up lowercase and a key stored verbatim was
+            // therefore a surface that installed, listed, and 404'd at every URL including its own.
+            // Said out loud rather than folded silently: this file is the operator's, and a surface
+            // quietly meaning something other than what they typed is the one outcome this class
+            // says it refuses to allow. (Rejecting uppercase instead would be worse — it turns a
+            // working declaration into a skipped one for anyone who already wrote one.)
+            String name = asWritten.toLowerCase(Locale.ROOT);
+            if (!name.equals(asWritten)) {
+                McpToolkit.LOGGER.info("[MCP Toolkit] {}: surface \"{}\" is served as \"{}\" — a URL "
+                    + "path is matched in lower case, so /mcp/{} is its address", where, asWritten,
+                    name, name);
             }
             McpSurface built = declared(name, e.getValue().getAsJsonObject(), all, where);
             if (built == null) {
@@ -190,7 +206,8 @@ public final class Surfaces {
     private static @Nullable McpSurface declared(final String name, final JsonObject o,
                                                  final Map<String, McpSurface> all, final String where) {
         String baseName = JsonRpc.str(o, "base");
-        McpSurface base = baseName == null ? all.get(DEFAULT_SURFACE) : all.get(baseName);
+        McpSurface base = baseName == null
+            ? all.get(DEFAULT_SURFACE) : all.get(baseName.toLowerCase(Locale.ROOT));
         if (base == null) {
             McpToolkit.LOGGER.warn("[MCP Toolkit] {}: surface \"{}\" skipped — base \"{}\" is not a "
                 + "surface (known: {})", where, name, baseName, String.join(", ", all.keySet()));
@@ -216,10 +233,20 @@ public final class Surfaces {
             }
         }
         String description = JsonRpc.str(o, "description");
+        // Declared, and inherited from the base when it is not: player-legality is a property of the
+        // surface, never of its NAME. See McpSurface's javadoc for the release in which it was the
+        // name, and for why a surface someone calls "survival" must not quietly become one.
+        boolean legal = o.has("legal") && o.get("legal").isJsonPrimitive()
+            ? o.get("legal").getAsBoolean() : base.legal();
+        if (legal) {
+            McpToolkit.LOGGER.info("[MCP Toolkit] {}: surface \"{}\" is PLAYER-LEGAL — tools that "
+                + "read past what a body could perceive answer as a body would (check_path from held "
+                + "knowledge, no audit rows in get_events)", where, name);
+        }
         return new McpSurface(name,
             description == null ? "declared in " + CONFIG_FILE : description,
             effectiveKeep, hide, base.mechanisms(),
-            JsonRpc.str(o, "instructions"));
+            JsonRpc.str(o, "instructions"), legal);
     }
 
     /** A string array field, or null when absent. An entry that is not a string is dropped loudly. */
@@ -260,11 +287,11 @@ public final class Surfaces {
         m.put("full", McpSurface.all("full", "every tool this game registers"));
         m.put("observe", new McpSurface("observe",
             "every tool whose mechanism is observe: reads, and nothing that acts",
-            null, Set.of(), Set.of(Mechanism.OBSERVE), null));
+            null, Set.of(), Set.of(Mechanism.OBSERVE), null, false));
         m.put("modding", new McpSurface("modding",
             "the modder's slice: author blocks, data, structures and assets against a running game, "
                 + "and read them back",
-            new LinkedHashSet<>(MODDING), Set.of(), null, null));
+            new LinkedHashSet<>(MODDING), Set.of(), null, null, false));
         return m;
     }
 

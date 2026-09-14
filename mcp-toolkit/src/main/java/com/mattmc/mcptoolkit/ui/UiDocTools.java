@@ -96,6 +96,14 @@ public final class UiDocTools {
         CompletableFuture<JsonObject> detach();
 
         /**
+         * Re-read the document into the preview that is showing it, if one is - {@code {refreshed,
+         * open, load_error?}}. A screen showing another document, or none, answers
+         * {@code refreshed:false} and names what is open; a screen whose editor is on is left alone,
+         * because the editor owns the document while it is on (InterpretedScreen.reload).
+         */
+        CompletableFuture<JsonObject> refresh(Path resolvedFile);
+
+        /**
          * One sentence when the in-game editor currently holds this document with unsaved edits,
          * else {@code null}. Compared on the RESOLVED file rather than on how it was addressed, so
          * an editor that opened {@code mcptoolkit:example} and a call that named the same file by
@@ -146,7 +154,10 @@ public final class UiDocTools {
             + "Name no document and it is taken from the open screen when that screen is a document's generated one. "
             + "A slot cannot move while attached (vanilla's Slot.x is final) and the reply says how far the live menu "
             + "has drifted from the document; "
-            + "detach - put the wrapped screen back, same instance, same menu. "
+            + "detach - put the wrapped screen back, same instance, same menu; "
+            + "refresh - the file changed ON DISK (an editor, an agent's Write, the daemon's watcher): mirror it into "
+            + "the loaded pack and re-read it into the preview showing it, if one is; the reply is the parse verdict "
+            + "either way. "
             + "Every mutation writes the file at once (there is no session and no undo - git is the undo) and is refused while "
             + "the in-game editor holds the same document with unsaved edits. A refusal is the parser's, listing every problem.";
 
@@ -156,7 +167,7 @@ public final class UiDocTools {
             DESCRIPTION,
             Schemas.objectOpt(
                 Schemas.object(
-                    "op", Schemas.str("read | lint | add | set | move | remove | generate | open | preview | attach | detach."),
+                    "op", Schemas.str("read | lint | add | set | move | remove | generate | open | preview | attach | detach | refresh."),
                     "ui", Schemas.str("The document as <mod>:<screen>, e.g. mcptoolkit:example."),
                     "ui_file", Schemas.str("The document as a path, for one no loaded mod owns."),
                     "path", Schemas.str("The element, in the parser's path syntax: elements[3].children[1]."),
@@ -185,7 +196,7 @@ public final class UiDocTools {
         String op = str(a, "op");
         if (op == null) {
             throw new IllegalArgumentException("'op' is required: read, lint, add, set, move, remove,"
-                + " generate, open, preview, attach, detach");
+                + " generate, open, preview, attach, detach, refresh");
         }
         // `attach` may take its document from the open screen and `detach` names none at all; every
         // other op is about a document and says which.
@@ -214,8 +225,9 @@ public final class UiDocTools {
             case "preview" -> preview(where, a);
             case "attach" -> attach(where, a);
             case "detach" -> detach();
+            case "refresh" -> refresh(where);
             default -> throw new IllegalArgumentException("unknown op '" + op
-                + "'; one of read, lint, add, set, move, remove, generate, open, preview, attach, detach");
+                + "'; one of read, lint, add, set, move, remove, generate, open, preview, attach, detach, refresh");
         };
     }
 
@@ -783,6 +795,67 @@ public final class UiDocTools {
                 }
                 return o;
             });
+    }
+
+    /**
+     * The file changed on disk and nothing in the game has been told (HOST_DESIGN.md section 4.2, the
+     * {@code .ui.json} row of the classifier). Two things a save from inside the game does by itself
+     * have to be done here on its behalf: the loaded pack's copy is brought up to date - a document
+     * addressed as {@code <mod>:<screen>} is read THROUGH the resource manager, which in a dev run is
+     * {@code build/resources/main}, so without the mirror the preview would re-read the old bytes
+     * (UiSaveTarget, trap 2) - and the preview showing it, if one is, is rebuilt. Refused while the
+     * in-game editor holds the same document dirty, exactly as a mutation is: the editor's unsaved
+     * work is the freshest form of the document, and a re-read would throw it away.
+     *
+     * <p>The reply is the parse verdict either way, because the watcher's "on refusal" column for
+     * this row is "the parse error, at the element": a document that does not parse is mirrored
+     * (the file on disk is what it is) and reported, not hidden behind a "refreshed" that would then
+     * be false.
+     */
+    private static CompletableFuture<JsonElement> refresh(final Where where) {
+        JsonObject r = new JsonObject();
+        where.place(r);
+        Client c = client;
+        if (c != null) {
+            String hold = c.unsavedHold(where.target().file());
+            if (hold != null) {
+                throw new IllegalStateException(hold + " Not re-read: the editor's unsaved edits are "
+                    + "the freshest form of this document, and a refresh would replace them with the "
+                    + "file. Save or discard there first.");
+            }
+        }
+        String text = where.read();
+        if (where.target().mirror() != null) {
+            try {
+                Files.writeString(where.target().mirror(), text, StandardCharsets.UTF_8);
+                r.addProperty("mirrored", true);
+            } catch (IOException e) {
+                r.addProperty("mirrored", false);
+                r.addProperty("mirror_error", e.getMessage());
+            }
+        }
+        try {
+            UiParser.parse(text);
+            r.addProperty("parses", true);
+        } catch (UiParseException e) {
+            r.addProperty("parses", false);
+            JsonArray problems = new JsonArray();
+            for (UiParseException.Problem p : e.problems()) {
+                problems.add(p.toString());
+            }
+            r.add("problems", problems);
+        }
+        if (c == null) {
+            r.addProperty("refreshed", false);
+            r.addProperty("open", "no client: this game has no screens");
+            return done(r);
+        }
+        return c.refresh(where.target().file()).thenApply(o -> {
+            for (var e : o.entrySet()) {
+                r.add(e.getKey(), e.getValue());
+            }
+            return (JsonElement) r;
+        });
     }
 
     private static CompletableFuture<JsonElement> detach() {

@@ -101,6 +101,7 @@ What the contexts mean, mechanically (`BridgeServer.dispatch`):
 | `hotswap_class` | any | privileged |
 | `ping` | any | observe |
 | `query_class` | any | observe |
+| `record_edit` | any | privileged |
 | `session_list` | any | observe |
 | `session_send` | any | privileged |
 | `ui_doc` | any | privileged |

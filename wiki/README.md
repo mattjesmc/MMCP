@@ -5,7 +5,8 @@ bridge inside your running game and registers tools on it, plus an MCP server th
 to whatever agent you use. The short version of what that buys you: **you stop restarting the game.**
 A texture, a recipe, a loot table, a model, a whole GUI screen — you change it and it is in the world
 you are standing in, a second later, and the agent can look at the result and tell you whether it
-worked.
+worked. Since 0.156.0 that sentence is literal: with the daemon running, **saving the file is the
+whole of it** — nothing is called, by you or by the agent.
 
 This wiki is written **for you, the person**. It explains what each kind of modding work looks like
 when an agent is doing it with you: what the machinery actually does under the hood, a walkthrough
@@ -19,7 +20,7 @@ that cost us time so they don't cost you any.
 - [Who this is for](#who-this-is-for)
 - [If you have ten minutes](#if-you-have-ten-minutes)
 - [The map](#the-map)
-- [Five things worth knowing first](#five-things-worth-knowing-first)
+- [Six things worth knowing first](#six-things-worth-knowing-first)
 - [This wiki and the other documentation](#this-wiki-and-the-other-documentation)
 
 ---
@@ -87,7 +88,7 @@ That is the whole foundation. Everything else is one subject at a time.
 | [Glossary](glossary.md) | A word in here means something specific and you want to check which. |
 | [Troubleshooting](troubleshooting.md) | Something is wrong and you want the list of usual suspects. |
 
-## Five things worth knowing first
+## Six things worth knowing first
 
 These come up on every page, so they are said once here.
 
@@ -111,7 +112,14 @@ afterwards — which is what mechanism is telling you to do.
 **4. The manifest is the truth about tools.** Every table in every document, this wiki included, is a
 summary of what the running bridge actually serves. `ping` first; `tool_surface` for the live list.
 
-**5. Your session sees a slice, not everything.** Profiles keep the tool list small because every
+**5. There is more than one way in, and one of them is not a call.** Your client can spawn the Node
+shim (the supported path), or register a URL — the game's own MCP server at
+`http://127.0.0.1:<port>/mcp`, or the daemon at `http://127.0.0.1:25500/mcp/<project>`, neither of
+which your client has to spawn. And with the daemon running, a file saved under your project's
+`src/` is landed in the game with nothing called at all. See [How it
+works](how-it-works.md#three-doors-and-a-route-with-no-door).
+
+**6. Your session sees a slice, not everything.** Profiles keep the tool list small because every
 tool name is paid for on every single turn. The default is `modding`. A tool the profile hides
 refuses with `profile_hidden` and tells you the call that widens it — it is a curtain, not a wall.
 See [Tool profiles and cost](tool-profiles-and-cost.md).

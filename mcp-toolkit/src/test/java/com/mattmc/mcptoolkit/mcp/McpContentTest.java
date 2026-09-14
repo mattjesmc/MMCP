@@ -65,6 +65,37 @@ class McpContentTest {
     }
 
     @Test
+    void aPictureThatDidNotArriveIsARefusalRatherThanABlankImage() {
+        // An image part with data:"" is a blank picture with nothing saying it is blank, and the
+        // model would read it as an empty scene rather than as a failed capture. That is the
+        // uncapturable-observation failure this envelope exists to prevent, so it goes back on the
+        // isError channel — which the model has to read — with whatever the tool did say attached.
+        JsonObject image = new JsonObject();
+        image.addProperty("mimeType", "image/png");
+        JsonObject result = new JsonObject();
+        result.add("_image", image);
+        result.addProperty("width", 1920);
+
+        JsonObject out = McpContent.fromEnvelope(ok(result));
+        assertTrue(out.get("isError").getAsBoolean());
+        JsonArray content = out.getAsJsonArray("content");
+        assertEquals(1, content.size());
+        assertEquals("text", content.get(0).getAsJsonObject().get("type").getAsString(),
+            "no image part at all — an empty one is the thing being fixed");
+        assertTrue(text(out, 0).contains("no base64"));
+        assertTrue(text(out, 0).contains("1920"), "the rest of the result is still worth having");
+    }
+
+    @Test
+    void anEmptyBase64IsTheSameRefusalAsNoneAtAll() {
+        JsonObject image = new JsonObject();
+        image.addProperty("base64", "");
+        JsonObject result = new JsonObject();
+        result.add("_image", image);
+        assertTrue(McpContent.fromEnvelope(ok(result)).get("isError").getAsBoolean());
+    }
+
+    @Test
     void aFailureIsAnErrorRESULTCarryingTheReason() {
         JsonObject envelope = new JsonObject();
         envelope.addProperty("ok", false);

@@ -103,9 +103,23 @@ drift check with nothing to check against. A keep-list's failure mode is silent 
 it is the same trade `art`, `screens` and `inspect` already take shim-side.
 
 **A project declares its own** in `config/mcptoolkit-surfaces.json` — `base`, `keep`, `hide`,
-`instructions`, `description` — which is what makes the seed not load-bearing. A declared surface
-**intersects** its base's keep-list rather than replacing it: "base `modding`, keep these four" must
-never be a way to obtain a tool `modding` does not serve.
+`instructions`, `description`, `legal` — which is what makes the seed not load-bearing. A declared
+surface **intersects** its base's keep-list rather than replacing it: "base `modding`, keep these
+four" must never be a way to obtain a tool `modding` does not serve.
+
+Two things a surface NAME is not, both closed in 0.148.0 (`BRIDGE_AUDIT.md` §4, §5):
+
+- **A name is folded to lower case at declaration**, because the URL is matched that way. A surface
+  written `"Build"` used to install, list, and then 404 at `/mcp/Build` and `/mcp/build` alike — and
+  vanish from `/mmcp mcp`, which is the one place a person would look to diagnose it. The rename is
+  logged; rejecting uppercase instead would have turned a working declaration into a skipped one.
+- **`legal` is a declared flag, never the name `survival`.** The surface name travels to
+  `BridgeServer.execute` in the parameter the shim fills with its *profile*, and `ToolContext.legal()`
+  was a string comparison against that one word — so a surface an operator named after the game mode
+  they play silently acquired knowledge-masked `check_path` and `audit` rows withheld from
+  `get_events`, and there was no way to ask for player-legality **on purpose** at all. Now
+  `execute` takes the legality beside the profile, the MCP door passes `surface.legal()`, and
+  `ToolContext.legal()`'s name-derived default is the shim's answer and only the shim's.
 
 ## 5. The protocol, and what is not implemented
 
@@ -136,6 +150,14 @@ Decisions worth the ink:
 - **`Origin` must be loopback or absent.** Non-browser clients send none; a browser sends one it
   cannot forge. Without the check, any page the human happens to have open could POST to this port and
   drive their game. A `file://` origin and `http://127.0.0.1.evil.example` are both refused.
+  **That sentence is true of `POST /cmd` too, and since 0.148.0 `/cmd` makes the check as well** —
+  along with `/tools`, `/hello`, `/heartbeat`, `/activity`, `/humantask` and `/review`. The rule
+  outgrew this door, so it lives in `BridgeOrigin` in the root package and both doors call it
+  (`BridgeOriginTest` carries the cases this section's own reasoning describes). `BRIDGE_AUDIT.md` §1
+  is the finding: the older door reads the body whatever its `Content-Type`, which is what makes a
+  cross-origin POST a CORS simple request with no preflight, and `/hello` was the worse of the seven
+  because it mints a session. Two doors into one process disagreeing about who may knock was the
+  defect; one shared check is the fix.
 
 ## 6. Two session ideas, kept apart
 
@@ -147,6 +169,19 @@ otherwise leaves a session the reapers still believe in.
 
 This is what lets every session-bound resource in the toolkit work for an MCP client without a single
 one of them knowing MCP exists.
+
+> **Both halves of that paragraph were aspirational until 0.148.0** (`BRIDGE_AUDIT.md` §3), and are
+> now what runs. **(a) Every request on this door is the keep-alive**: `McpEndpoint.post` touches the
+> toolkit session beside the connection lookup. Before it, the session was refreshed only by an actual
+> `tools/call` — the shim POSTs `/heartbeat` every 30s for exactly this reason and there was no
+> equivalent here — so a client that spent three minutes thinking, or waiting on a human, came back to
+> destroyed drones and a dropped `locate` ledger. The touch is in the endpoint rather than in
+> `McpProtocol.handle` so the protocol layer goes on naming no `Sessions` and staying testable with no
+> game around it. **(b) The reap now calls `Sessions.abort`** for each connection it drops. Before it,
+> what actually stopped the reapers believing in a departed client was the three-minute staleness this
+> reap has nothing to do with — the code worked and the stated mechanism was not the one running. With
+> (a) in place that staleness no longer fires under a live client at all, so thirty minutes is the
+> real number and this is the only thing that ends an abandoned connection.
 
 ## 7. What a model is told
 

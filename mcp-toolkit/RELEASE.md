@@ -75,8 +75,10 @@ is the arm the toolkit's central claim rests on. The second run cost a relaunch 
 
 | What | Last green | On | Toolkit / shim then | Versions since |
 |---|---|---|---|---|
-| **The whole battery, 108 files, THE LOADER-ONLY ARM** | **2026-09-10, 903 pass / 0 fail, one part, no restarts** (`sequential-0.73.0-part1.log`, `-part2.log`; section 2.9) | dev client, `New World`, port 25599, no fabric-api (5 mods); window minimized, host NOT quiet | 0.145.0 / 0.73.0 | 0 / 0 |
-| **The whole battery, 108 files, THE FABRIC-API ARM** | **2026-09-10, 901 pass / 8 fail in two files; both files are probes outliving their subject, both green after the fix** (`battery-0.72.0-fabricapi/sequential-0.72.0-part{1,2,3}.log`, moved into that directory so the loader-only arm's resume could start clean; section 2.8) | dev client, `New World`, port 25599, **`-Pfabricapi=true`** - the arm no battery had ever been on; window minimized throughout, host NOT quiet | 0.144.0 / 0.72.0 | 1 / 1 |
+| **The whole battery, 112 files, THE LOADER-ONLY ARM** | **2026-09-14, 950 pass / 1 fail, the one red green alone** (`sequential-0.79.0-0.157.0-part1.log`, `-part2.log`, `-rerun.log`; section 2.11) | dev client, `New World`, port 25599, no fabric-api; window minimized, host VERIFIED quiet first, `mmcpd` down | 0.157.0 / 0.79.0 | 0 / 0 |
+| **The whole battery, 109 files, THE LOADER-ONLY ARM** | **2026-09-11, 916 pass / 1 fail, the one red green alone** (`sequential-0.73.0-0.146.0-part1.log`, `-part2.log`, `-rerun.log`; section 2.10) | dev client, `New World`, port 25599, no fabric-api; window minimized, host verified quiet | 0.146.0 / 0.73.0 | 11 / 6 |
+| **The whole battery, 108 files, THE LOADER-ONLY ARM** | **2026-09-10, 903 pass / 0 fail, one part, no restarts** (`sequential-0.73.0-part1.log`, `-part2.log`; section 2.9) | dev client, `New World`, port 25599, no fabric-api (5 mods); window minimized, host NOT quiet | 0.145.0 / 0.73.0 | 12 / 6 |
+| **The whole battery, 108 files, THE FABRIC-API ARM** | **2026-09-10, 901 pass / 8 fail in two files; both files are probes outliving their subject, both green after the fix** (`battery-0.72.0-fabricapi/sequential-0.72.0-part{1,2,3}.log`, moved into that directory so the loader-only arm's resume could start clean; section 2.8) | dev client, `New World`, port 25599, **`-Pfabricapi=true`** - the arm no battery had ever been on; window minimized throughout, host NOT quiet | 0.144.0 / 0.72.0 | 13 / 7 |
 | **The whole battery, 107 files (K's, at 0.132.0)** | **2026-09-06/07, 866 pass / 25 fail in eight files, all eight green on isolated reruns** (`sequential-0.63.0.log` + `-part2.log`; `-rerun.log` 104/1, `-rerun2.log` 14/0; section 2.6) | dev client, `New World`, port 25599, the ONLY game on the machine; the window minimized by a hand mid-run | 0.132.0 / 0.63.0 | 11 / 8 |
 | **The whole battery, 102 files (the dash's)** | **2026-09-06, 868 pass / 4 fail in four files** (`sequential-0.60.0-part1.log` files up to `player-body`, `-part2.log` from `player-hands`; section 2.5) | dev client, `New World`, port 25695, a SECOND game on the machine | 0.128.0 / 0.60.0 | 15 / 11 |
 | **The whole battery, 101 files** | **2026-09-06, 845 pass / 24 fail in six files, all six diagnosed to the host (`sequential-0.58.0.log`) - section 2.2** | dev client, `New World` (established, 835 MB) | 0.124.0 / 0.58.0 | 19 / 13 |
@@ -393,6 +395,63 @@ where they were standing", **17/0 alone ten minutes later** (`-rerun.log`).
 verdict - the same 0/0 it gives in 2.9. `wm_session_tag` was refused all run because this game has
 the world-model recorder off, so the session stays untagged; untagged reads as adhoc, which is out of
 corpus either way, and the tag is best-effort by construction.
+
+### 2.11 The whole battery at 0.157.0 (2026-09-14) - eleven versions paid, and 108 files that did not move
+
+**112 files, 950 pass / 1 fail, 33 minutes, one part, nothing killed from outside. The one red is
+3/0 alone.** Logs `sequential-0.79.0-0.157.0-part1.log` (the run), `-part2.log` (the gated
+`create-world` retry, 0/0 as always) and `-rerun.log` (the red, alone). Same client, same save -
+**`world_uuid 5d154361-6bff-40fe-8404-4ff3f28d8c52`, `seed_hash dc496a75e07624e4`, CHECKED against
+2.10 rather than assumed**, which is what that section wrote the identity out for - same port, same
+minimized window, same loader-only arm. Host verified quiet before the launch (`dev-procs.ps1`: no
+bridge, no dev JVM, no rebuild supervisor), and **`mmcpd` verified down**, which is a new
+precondition this battery did not used to have: the disk feed (0.156.0) watches every registered
+root's `src/`, and the probes write there, so a running daemon would push a probe's own files into
+the game mid-run. The run is tagged `0.79.0-0.157.0` for 2.10's reason - the battery names its logs
+after the SHIM, and the thing under test is the jar.
+
+**The gap this pays.** 2.10 was the last whole run, at 0.146.0 / 0.73.0. **Eleven toolkit versions
+and six shim versions** stood behind no whole run: the entity check's four gaps and its joint-aware
+tolerance (0.149.0, 0.151.0), the mixin hotswap tier and its live confirmation (0.149.0, 0.150.0),
+re-entry and `reinit` (0.152.0), the compile inside the swap (0.153.0), `record_edit` and the `edit`
+event (0.156.0), `mmcpd` and the disk feed (0.155.0, 0.156.0), and the cockpit and supervisor
+(0.157.0). That is the third time this row has been allowed to drift past ten versions, and the
+third time it came back clean - which is an argument for running it more often, not for trusting it
+less.
+
+**THE TWO RUNS AGREE FILE FOR FILE, AND THIS IS THE STRONGEST THE ROW HAS BEEN.** Compared verdict
+by verdict against 2.10, **108 of the 109 shared files have an identical pass count**, and every
+difference is accounted for:
+
+| File | 0.146.0 (2.10) | 0.157.0 | Why |
+|---|---|---|---|
+| `daemon` | - | **7/0** | new. The daemon's own probe: two clients on two projects, each its own profile, memory root and shim pid. |
+| `watcher` | - | **12/0** | new. The disk feed: the classifier, the batch, the identical-rewrite refusal that dials no game. |
+| `supervisor` | - | **7/0** | new at 0.157.0, with the cockpit. |
+| `blockbench-surface` | 16/0 | **24/0** | +8 cases over the plugin work from 0.147.0 to 0.157.0. |
+
+951 - 917 = +26 new + 8, which closes. **No shared file lost a single test.**
+
+**The one red, and why it is the probe's terrain and not the tool.** `check-path-r1` case *"R2:
+walked terrain answers true; ray-seeded target gives a mid-route frontier"*, **3/0 alone**. The
+failure is mechanistic and the reply says so itself: the body walked the strip along **z=1709999**
+and the case asks about the centre line at **z=1710000**, so `knowledge_frontier` came back
+`{x:1710004, z:1709999}` and `end` `{x:1710003, z:1709999}` - one lane off - with 56 cells observed
+and `reachable: null`. **That is the tool being right**: it refused to call a never-observed cell
+reachable, which is the whole point of the survival provenance stamp. What failed is the probe's
+PRECONDITION, that the walk covers the cells it then asks about. The probe's own comment block
+predicts this exactly - it read red the same way at 0.124.0 and 0.125.0, names lane drift as the
+cause, and names the regime that makes it fragile: with the world-model recorder OFF a body knows
+only the cells it stands in, and this game has it off (the run's `wm_session_tag` was refused all
+run for that reason). So it is a known-shaped flake with a named mechanism, not a diagnosis by
+retry - but it is the SECOND whole battery in a row whose single red is a probe outliving its own
+staging assumptions, and that is a probe to fix rather than to keep rerunning.
+
+**One divergence from 2.9 and 2.10 worth recording, because both of them reported it as a property
+of this save.** The client **did not park on `BackupConfirmScreen`** opening `New World` this time -
+it went straight in, with no click. Both earlier sections describe that click as reproducible and
+2.10 explicitly called it "a property of this save on this arm rather than of what one session left
+in `level.dat`". Two runs are not enough to have called that, and this run is the falsifier.
 
 ### 2.1 What that table says
 
@@ -738,6 +797,22 @@ still the owner's call.
 
 ## 5. Hygiene still open
 
+- ~~**The bridge audit (2026-09-13, 0.147.0 / shim 0.74.0) - `docs/platform/BRIDGE_AUDIT.md`.**~~
+  **ALL NINE BUILT the same day, 0.148.0 / shim 0.75.0**, in the order the audit proposed. §1: the
+  `Origin` rule moved to `BridgeOrigin` in the root package and all seven private-door handlers call
+  it first (`/cmd` before its `Sessions.touch`; `/hello`, which mints a session, was the worse of the
+  seven), `McpEndpoint` delegates, and `ARCHITECTURE.md` now carries the paragraph on what
+  "localhost-trusted" does and does not cover - no token, no client allow-list, an absent `Origin`
+  still served. §2: a `volatile stopped` flag set first in `stop()`, the shutdown hook registered
+  once in `init`. §3: `Sessions.touch` per request in `McpEndpoint.post`, and the reap now calls
+  `Sessions.abort` so the thirty minutes is the real number. The other six with them: surface names
+  fold to lower case at `put`, `legal` is a declared surface flag instead of the name `survival`,
+  `warnOversized` counts bytes, a base64-less `_image` is an `isError` refusal rather than a blank
+  picture, and the shim's two (fresh-and-swapped `MECHANISM`, no write-through to a shared tool
+  object). 198 unit tests green, 12 new. **What is still owed is the live confirmation** the audit
+  asked for and unit tests cannot give, written down at the top of the record: a cross-origin `fetch`
+  at `/cmd` refused while curl and the shim carry on; hold the port, boot, quit inside the 90-second
+  window, watch the JVM exit; an idle MCP client with a drone still has its body after five minutes.
 - ~~**F4 - honest refusal off Windows.**~~ **DONE 0.125.0**: `Platform.isWindows()` is the one
   definition; `ServerExtract` returns a sentence naming the extracted directory and the `npm install
   --omit=dev` to run by hand, `ObsSupervisor` the `node record-supervisor.mjs` line, and
@@ -882,3 +957,39 @@ asks (`TODO.md` 4.5) into the same dash as steps 4-6 (0.129.0-0.131.0): `ping.bu
 `context` column, `get_tooltip` and `create_world`, a living subject in the studio with a frozen
 tick. The battery and the sitting move to step 7; section K5 has the cut order. **K1-K3 BUILT
 2026-09-06** (0.129.0-0.131.0): what is left before the tag is step 7 itself.
+
+## 7. Release 2 is out (2026-09-11) - toolkit 0.146.0
+
+**`1aea820` on `mattjesmc/MMCP` `main`, tagged `v0.146.0`, GitHub Release "MMCP release 2 - MCP
+Toolkit 0.146.0" with both jars, and `mcp-toolkit 0.146.0` on the `maven` branch.** 797 files, the
+tracked tree exported with `git archive` so nothing untracked could ride along - 40 new files over
+release 1, which are the `mcp/` package, its tests, the probe, the design record and the twenty-page
+`wiki/`.
+
+Committed ON TOP of release 1's snapshot rather than as a new orphan: `main` is a snapshot of a tree,
+not a history of the workbench, and one commit per release is exactly what it should read as. The
+`v0.145.0` tag is untouched.
+
+**The same four pre-commit checks release 1 learned, re-run**: the three work-list paths hold stubs
+(so all 125 citations still resolve), zero machine paths, zero credential-shaped strings, `LICENSE`
+present. And the maven trap re-checked the way it has to be: **all 15 artifacts on the branch verified
+against all 60 of their checksum sidecars FROM THE STAGED BLOBS**, not from disk. `* -text` held.
+Verified afterwards from outside: `raw.githubusercontent.com` serves the 0.146.0 jar at 200 and the
+served bytes hash identically to the built jar.
+
+**And the sentence release 1 could not write is now true.** That release's note - "the README still
+says mavenLocal, and correctly: raw.githubusercontent.com serves a private repository only to an
+authenticated request. The URL starts working when the repository is made public, which is the
+owner's call" - has been overtaken: **MMCP is public**, and the static Maven answers. Two things
+follow, and neither is done here because both are content decisions rather than mechanics:
+
+1. **`mcp-toolkit/README.md`, "Where the jar and the plugin come from", is now wrong.** It says both
+   artifacts resolve from mavenLocal "until that branch is pushed". The branch is pushed and served.
+   What it should say instead is a `repositories { }` block a consumer can paste, and that needs the
+   URL form the owner intends (raw, or Pages if Pages is enabled on this repository - the README
+   claims Pages and only raw has been proved).
+2. **The convention plugin's default toolkit version is two releases stale.** `com.mattmc.mcmod`
+   0.7.0 defaults `mcptoolkit_version` to **0.128.0**; a consumer who does not set it in
+   `gradle.properties` gets that, not 0.146.0. It was already stale at release 1 and is not made
+   worse here, so it is recorded rather than bumped - changing it means a plugin release, which is
+   a decision about what consumers are pinned to and not a side effect of tagging a toolkit.

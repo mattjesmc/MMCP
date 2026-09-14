@@ -78,7 +78,12 @@ public final class McpEndpoint implements HttpHandler {
     public McpEndpoint() {
         this(new McpProtocol(
             McpTools::all,
-            BridgeServer::execute,
+            // The surface's NAME is what the dispatcher records as the caller's role, and its
+            // declared legality is passed beside it rather than read back out of that name — see
+            // McpSurface. Spelled out here instead of a BridgeServer::execute method reference so
+            // the two halves are visibly separate things.
+            (tool, args, session, surface) ->
+                BridgeServer.execute(tool, args, session, surface.name(), surface.legal()),
             () -> Platform.modVersion(McpToolkit.MOD_ID).orElse("unknown"),
             () -> INSTRUCTIONS));
     }
@@ -108,7 +113,7 @@ public final class McpEndpoint implements HttpHandler {
         try {
             if (!originAllowed(ex)) {
                 // Not a JSON-RPC error: nothing here got as far as being a JSON-RPC anything.
-                respond(ex, 403, "{\"error\":\"this endpoint serves loopback origins only\"}");
+                respond(ex, 403, com.mattmc.mcptoolkit.BridgeOrigin.REFUSAL);
                 return;
             }
             String surfaceName = surfaceOf(ex.getRequestURI().getPath());
@@ -181,6 +186,19 @@ public final class McpEndpoint implements HttpHandler {
         String sessionHeader = ex.getRequestHeaders().getFirst("Mcp-Session-Id");
         boolean initializing = messages.stream().anyMatch(m -> "initialize".equals(JsonRpc.method(m)));
         McpConn conn = McpConn.get(sessionHeader);
+        // THE KEEP-ALIVE, and it is this door's only one. The shim POSTs /heartbeat every 30s
+        // because a toolkit session unseen for three minutes is reaped — drones destroyed,
+        // possessions released, the locate anchor ledger dropped. An MCP client has no such call to
+        // make: it may `ping` perfectly on its SDK's cadence and still go stale, because the only
+        // other touch is inside execute() and a client that is thinking is not calling a tool. So
+        // every request on this door is the liveness signal, which is what it always meant.
+        //
+        // Here in the endpoint rather than in McpProtocol.handle: the protocol layer names no
+        // Sessions and stays testable with no game around it, which is the whole reason that class
+        // boundary exists.
+        if (conn != null) {
+            Sessions.touch(conn.toolkitSession);
+        }
         boolean minted = false;
         if (conn == null) {
             if (sessionHeader != null && !sessionHeader.isBlank() && !initializing) {
@@ -286,37 +304,12 @@ public final class McpEndpoint implements HttpHandler {
     }
 
     /**
-     * Loopback only, and an absent {@code Origin} is fine: a non-browser client sends none. A browser
-     * sends one it cannot forge, which is what makes this worth checking at all — without it, any
-     * page the human has open could POST to this port and drive their game.
+     * Loopback only, and an absent {@code Origin} is fine: a non-browser client sends none. The rule
+     * and the reason both live in {@link com.mattmc.mcptoolkit.BridgeOrigin} now, because the other
+     * front door needs exactly the same check and a second copy is how the two drift apart.
      */
     static boolean originAllowed(final HttpExchange ex) {
-        String origin = ex.getRequestHeaders().getFirst("Origin");
-        return isLoopbackOrigin(origin);
-    }
-
-    static boolean isLoopbackOrigin(final @Nullable String origin) {
-        if (origin == null || origin.isBlank() || "null".equals(origin.strip())) {
-            return true;
-        }
-        String o = origin.strip().toLowerCase(Locale.ROOT);
-        // The scheme is checked, not skipped over: "file://127.0.0.1" has a loopback-looking host and
-        // is not a loopback origin, and an origin whose scheme we do not recognize is not one either.
-        int scheme = o.indexOf("://");
-        if (scheme < 0 || !(o.startsWith("http://") || o.startsWith("https://"))) {
-            return false;
-        }
-        String host = o.substring(scheme + 3);
-        int slash = host.indexOf('/');
-        if (slash >= 0) {
-            host = host.substring(0, slash);
-        }
-        int colon = host.lastIndexOf(':');
-        if (colon > 0 && host.indexOf(']') < colon) {
-            host = host.substring(0, colon);
-        }
-        return host.equals("127.0.0.1") || host.equals("localhost") || host.equals("[::1]")
-            || host.equals("::1");
+        return com.mattmc.mcptoolkit.BridgeOrigin.allowed(ex);
     }
 
     private static JsonArray toArray(final List<JsonObject> objects) {

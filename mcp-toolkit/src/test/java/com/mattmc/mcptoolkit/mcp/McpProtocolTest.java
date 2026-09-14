@@ -35,7 +35,8 @@ class McpProtocolTest {
     private final McpProtocol protocol = new McpProtocol(
         () -> registry,
         (tool, args, session, surface) -> {
-            calls.add(tool + " session=" + session + " surface=" + surface + " args=" + args);
+            calls.add(tool + " session=" + session + " surface=" + surface.name()
+                + (surface.legal() ? " LEGAL" : "") + " args=" + args);
             return nextEnvelope;
         },
         () -> "9.9.9",

@@ -6,6 +6,780 @@ and nothing else about an entry changed - the prose is as it was written on the 
 citations by bare filename (`docs/README.md` maps them). A new version gets a new `##` section at the
 top; the mcp-server (shim) version it ships with is named inside the entry when it changed.
 
+## 0.157.0
+
+**THE COCKPIT, FIRST FORM - PAGES THE DAEMON SERVES - AND THE SUPERVISOR UNDER IT (`HOST_DESIGN.md`
+section 15 step 5 taken ahead of steps 3 and 4, and section 3.6; shim 0.79.0).** `mmcpd` now
+serves the cockpit at `http://127.0.0.1:25500/ui/` (`daemon/ui/`: one page, no framework, `/`
+redirects to it): Projects with state, the MCP URL, the sessions on it, the disk feed's counters
+and the game's identity; Run per project - **Launch**, **Rebuild & launch**, **Stop**, target
+client/server, takeover, the fabric-api arm, a `-Ui` document - with the cycle's phase and its
+output tailed live; the game's `latest.log` tail; Sessions with a profile switch, kick and the
+shim's stderr; the change feed live over SSE with the hunk a click away (`refused` and `none` rows
+hidden by default - a Gradle build alone produces thirty of them, see below); Blockbench instances
+with kill and the template re-seed. Everything on the page is a daemon route an agent could call,
+and nothing it does bypasses one. This is the browser form of section 6's VS Code extension,
+taken first because it is the form every machine can open (this one has no VS Code) and because
+half of section 6 is webviews anyway: the extension, when it exists, hosts these same pages and
+adds what only an editor can - the buffer feed, tab decorations, `McpServerDefinitionProvider`.
+
+Under it, **the supervisor** (`daemon/supervisor.mjs`, section 3.6): `POST /projects/<n>/run
+{target, rebuild, takeover, ui, ui_edit, fabricapi}` and `POST /projects/<n>/stop` spawn the
+workbench's `tools/rebuild.ps1` exactly as `launch_game` does and keep its output IN THE DAEMON,
+line by line, with the phase read off the script's own `[rebuild]` lines (`locked`, `stopping`,
+`stopped`, `building`, `built`, `launching`, `waiting`, `up`; `build-failed`, `timeout`,
+`refused`) and the exit code named in the script's own words (`up`, `stopped`, `bridge timeout`,
+`refused: production instance`, `refused: another cycle owns the port`, `build failed (exit n)`).
+`GET /projects/<n>/log` serves a run as JSON or tails it as SSE (`line` events, then `exit`);
+`GET /projects/<n>/runs` is the history (twenty per project); `GET /projects/<n>/latest` is the
+game's `latest.log` tail read from the registry's `gameDir`; `GET /projects` gains `state:
+building` (a cycle in flight and no game answering), `run` and `last_run`. One cycle per port: a
+second run while the daemon's own supervisor is alive is a 409 naming the first, `takeover` is
+handed down as `-Takeover`; the script's file-handle lock still sees a rival in another process.
+A daemon run from an extracted dist has no script and refuses a run with the reason; every other
+route works. CLI: `mmcpd run <name> [--target server] [--no-rebuild] [--takeover] [--ui doc]
+[--fabricapi]` (starts and follows), `mmcpd stop-game <name>`, `mmcpd runs <name>`, `mmcpd log
+<name> [--run id] [--follow]`, `mmcpd ui`. `tools/cockpit-shot.mjs` screenshots a cockpit tab
+through headless Edge over CDP, so an agent can look at the page it edited.
+
+Checked: `probes/supervisor.test.mjs` (7/7, a FAKE rebuild.ps1 that prints the real phase lines
+and exits with a chosen code; no game, no Gradle) - the page and its files served and nothing
+outside `daemon/ui/`, a foreign `Origin` refused; a run's argument line, the phase machine, `up`
+with the log file on disk, `building` while in flight, `last_run` after; SSE tails and ends with
+the verdict, a finished run replays; the 409 with the first run named and `-Takeover` passed
+down; a stop is `-SkipBuild -NoRelaunch`, a failed build and a bridge timeout are named; the tail
+of `latest.log`; the refusal without a script. Live, the toolkit's own dev client: **Rebuild &
+launch** through the daemon was `up` in 48 s (Gradle 11 s warm), the project read `building ->
+up` with the run's phase, a texture written under `src/` with the game up was `push_asset swapped
+4392ms` on the feed and its deletion `clear_assets swapped`, **Stop** was `stopped` in 6 s, the
+history held both. Found on the way: a Gradle build fires an `fs.watch` event for EVERY resource
+it reads (libuv asks Windows for last-access changes too) - 34 rows on the feed, all `refused:
+identical`, no game call, which is the falsifier doing its job and why the page hides them; a
+`Write-Error` line is WRAPPED by the PowerShell host at 80 columns with the script's path in
+front, and a long path puts the wrap inside the word `[rebuild]`, so the phase reader matches a
+continuation glued to its predecessor; `timed out waiting for the bridge` contains `waiting for
+the bridge` and must be tested first; and a headless browser's `--timeout`/`--screenshot` cuts a
+page's in-flight fetches, which is not the page failing - hence the CDP tool.
+
+## 0.156.0
+
+**THE DISK FEED: A FILE WRITTEN UNDER A REGISTERED ROOT LANDS IN THE RUNNING GAME WITH NO TOOL
+CALLED (`HOST_DESIGN.md` section 15 step 2, built and checked live; shim 0.78.0).** `mmcpd` now
+watches every registered project's `src/` (`daemon/watcher.mjs`, `fs.watch` recursive, no
+dependency): a change is held until it has been quiet for 500 ms and the batch flushes when every
+pending path is quiet, then the classifier of section 4.2 lands it - textures, models, sounds,
+lang through `push_asset {file}` + ONE `reload_resources` for the batch; `data/` through
+`push_data` + `reload_data` (a world must be loaded); a `.ui.json` through the new `ui_doc
+{op:"refresh"}`; `.java` through ONE `hotswap_class {classes, compile:true}` for the batch, a
+class the JVM never loaded dropped as `pending-rebuild` and the rest retried; a deleted asset or
+data file through `clear_assets` / `clear_data`; `gradle.properties` re-reads the registry entry.
+Every change is a row on the change feed (`daemon/feed.mjs`: `GET /changes` as JSON or SSE, `mmcpd
+changes --follow`) and the same row is an `edit` event in the game's `get_events`, written through
+the new privileged tool **`record_edit`** (the only way into the stream from outside; it checks the
+vocabulary, caps the hunk and stamps the caller's session). Every daemon session on the project
+also receives `notifications/resources/updated` naming the file. The row says what became of the
+edit: `swapped`, `refused` (identical bytes - decided at the daemon from a content hash seeded at
+start, so no game is dialed and NO RELOAD RUNS, which is the step's falsifier; or a tool's own
+refusal), `not-yet` (a Java file that does not compile yet), `pending-rebuild` (a new class, a
+structural change, `fabric.mod.json`, `*.mixins.json`, a deleted class), `none` (the game is down,
+or nothing lands that kind). `MMCPD_WATCH=0` or `daemon.watch:false` turns it off. `record_edit` is
+served by `full` and excluded from the `modding` default (the daemon calls it over `/cmd` itself; a
+modder needs the READ, `get_events`), specced `act` in the conformance ratchet, listed in
+`HEADLESS.md`.
+
+`ui_doc refresh` exists because a document addressed as `<mod>:<screen>` is read through the
+resource manager, which in a dev run is `build/resources/main` (`UiSaveTarget`'s trap 2): the op
+mirrors the source file into the loaded pack's copy, re-parses it, and rebuilds the preview showing
+it when one is and its editor is off; the reply is the parse verdict either way, and it is refused
+while the in-game editor holds the document dirty, exactly as a mutation is.
+
+Checked: `probes/watcher.test.mjs` (12/12, a fake bridge on the project's port, no game) - the
+classifier and the hunk; a texture written and nothing called is one push + one reload, the row
+`swapped`, the game told, a session notified once; the identical rewrite is one `refused`, no
+push, no reload; two Java files are one compile; `not-yet`, `pending-rebuild` (unloaded class,
+structural), `refused` (unchanged bytes); document, data, structural, deletion; a down game keeps
+its row with `none` and SSE delivers it; a port change re-points the watcher. Live on the
+toolkit's own client: a magenta title logo written into `src/main/resources` was on screen 5.4 s
+later (the 4.9 s resource reload is the latency), `get_events {type:"edit"}` carried the row; the
+same bytes rewritten were one `refused` and `latest.log` still showed one reload; a line added to
+`ping`'s lambda with `Edit` was `hotswap swapped 25097ms` (Gradle cold) and `ping` answered it,
+the revert 5.7 s warm; the deletion was `clear_assets` and the logo was back. Found on the way:
+`blockbench-profiles.mjs` (0.155.0) and the daemon were missing from the dist whitelist
+(`BundledResourcesTest` walks `daemon.mjs` too now). Open (section 16): Java latency is Gradle's
+until step 3's in-JVM compile; an asset's is the whole-pack reload; a watcher override outlives
+the daemon and shadows the source until the next rebuild; the disk feed cannot attribute.
+
+## 0.155.0
+
+**`mmcpd`: THE DAEMON THAT HOSTS THE BRIDGE (`HOST_DESIGN.md` section 15 step 1, built and checked
+live; shim 0.77.0, bridge plugin 0.13.0).** One long-lived process per machine at
+`http://127.0.0.1:25500`, and the thing an agent client now registers: `/mcp/<project>?profile=<p>`
+is a streamable-HTTP MCP door, so `claude mcp add --transport http mmcp
+http://127.0.0.1:25500/mcp/rocketeer` replaces a node command and its env, and the client spawns
+nothing. The daemon owns what was fought over - `~/.mmcp/registry.json` (which game is which, read
+from each root's `mcmod.port`), the session table (`GET /sessions`, `DELETE`, a profile switch
+from outside that makes the child re-list), where memory lives (`~/.mmcp/memory/<project>`), and
+the Blockbench each session works in. CLI: `node mcp-server/daemon.mjs serve|status|stop|add
+<root>|remove|projects|sessions|kick|profile|blockbench|bb-template|url`. The stdio shim is
+unchanged and stays release 2's contract.
+
+**No jar ever carried this number.** Step 1 was still uncommitted when step 2 was built, so both
+landed in one commit (`19f712b`): `build.gradle` went 0.154.0 to 0.156.0 and `package.json` 0.76.0
+to 0.78.0, and 0.155.0 / shim 0.77.0 exist only as the name of the step. The section is kept
+separate because the step, its two corrections and its live findings are its own - read it as the
+first half of 0.156.0.
+
+Two places the design was corrected by the code, both recorded in the design (sections 3.1, 11):
+
+- **A child shim per session, not "the shim's layers held once".** Every layer keeps its state at
+  module scope; the daemon spawns `index.mjs` per MCP session with the project's env and cwd and
+  pumps JSON-RPC lines between the child and the `StreamableHTTPServerTransport`. Its own requests
+  to a child carry `mmcpd-` ids and are consumed in the pump. The one shim change this needed:
+  `MCPTK_BLOCKBENCH_SESSION` outranks `mcptk-<ppid>` as the Blockbench identity, because every
+  child's parent is the daemon.
+- **A Blockbench INSTANCE per session, not a window pool** (the owner's correction: "spawn an
+  isolated app for each session - no window hassle at all"). `Blockbench.exe --userData
+  ~/.mmcp/bb/<session>` is a separate process with its own lock, seeded from a template of the
+  person's profile (the plugin registration lives in Chromium's Local Storage, the `process` grant in
+  `plugin_permissions.json`). The plugin's OWNED MODE (`MCPTK_BLOCKBENCH_PORT`, `MCPTK_BLOCKBENCH_OWNER`
+  in its environment) binds the port it was handed, never docks, beats or sweeps, and takes a claim
+  from its owner alone; `/hello` says `owned`. The instance is spawned on the FIRST REQUEST to a
+  per-session proxy the daemon holds from the session's first moment, so a `modding` session never
+  pays for an Electron and the proxy is the wire the undo-stack feed will read. A clean instance dies
+  with its session; one with unsaved work is kept and listed `orphaned`.
+
+Checked: `probes/daemon.test.mjs` (7/7, no game) - two clients on two projects, each its own profile,
+memory root and shim pid; kill one, the other answers; a profile switch from outside sends ONE
+`tools/list_changed`; a page's `Origin` is refused. Live: an `art` session spawned its instance on
+its first list and served 34 tools after 7 s; a `modding` session's `launch_game` brought the dev
+client up from the child's cwd, `GET /projects` read `down -> up`. Two findings from the live run: a
+GET's request stream closes before its answer (a proxy abort hung on `req` killed every call), and
+the toolkit's own game runs in the workbench root's `run/` (the registry carries an absolute
+`gameDir` for the attachment check). Measured: the SDK client's `close()` sends no `DELETE`, so a
+client that held the GET stream and holds nothing for 90 s is reaped as gone. Open (design section
+16): the game still mints the child's id at `/hello`; an orphaned instance cannot be adopted.
+
+## 0.154.0
+
+**A LIVING SUBJECT IN AN `entity` ELEMENT CRASHED THE SCREEN ON ITS FIRST FRAME (found from
+unicornrainbow, 2026-09-13).** `EntityView` creates its entity-type subject with `EntityType.create`
+and never adds it to a level, which is the point - it ticks nothing. In 26.2 an entity id is handed
+out only by `ServerLevel.addEntity`, and `Entity.getId()` throws on an unassigned one; every
+`LivingEntityRenderer.extractRenderState` asks for it (`ItemModelResolver.updateForLiving` seeds the
+head item's model with the id), so any mob subject died with "Tried to access entity ID before ID
+assignment" the moment its screen rendered. The shipped example never met it because its subject is
+an armour stand, which takes the other branch. The subject now wears id -1 in all three copies of the
+widget (the interpreter, the emitter's template and the toolkit's own generated sample): negative,
+because the server counts up from 1, so nothing real can share it.
+
+## 0.153.0
+
+**THE COMPILE STEP, INSIDE THE LOOP (`HOTSWAP_CEILING.md` section 6, built and confirmed live), AND
+THE MANUAL THAT DOCUMENTS THE SECONDS LOOP (section 7).** Every swap used to be two turns: `gradlew
+compileJava` in one, `hotswap_class` in the next. The two turns were the cost. The defect was that
+they are two separate statements about which project is being worked on and nothing checked that they
+agreed - a compile aimed at one project and a swap aimed at another each report success and together
+change nothing, which is section 4's no-op arriving by a second road.
+
+**`hotswap_class {compile: true}` runs the compile, in the project the bytes come from.** Nothing is
+typed: the loaded class states its classes root (the classpath URL the swap already reads, minus the
+package path), and a Gradle classes root states the project and the task -
+`<project>/build/classes/<lang>/<sourceSet>` is built by `compile[SourceSet][Lang]`. That is Gradle's
+own naming rule rather than a table, so `build/classes/java/client` resolves to `compileClientJava`
+and `build/classes/kotlin/main` to `compileKotlin` without either having been anticipated. One Gradle
+run per distinct project-and-task in a batch; the reply carries Gradle's own word for each
+(`executed`, `UP-TO-DATE`, `NO-SOURCE`) and how long it took.
+
+**A failed compile IS the reply** - javac's file, line and column, with *"nothing was redefined, and
+the game is still running the code it was running before"*. **Only compile tasks ever run**: `jar` and
+`build` deadlock against a running game, and that is structural here rather than a rule to remember,
+because a task name derived from a classes directory can never be a packaging task. When a sibling
+project's jar is dragged in anyway, the Windows lock message is translated into what it means. A
+directory that is not a Gradle classes root is refused rather than guessed at, and every refusal that
+costs nothing - not loaded, mixin target, no project - is reached **before** the compiler runs.
+
+**Section 4's refusal is re-aimed.** Byte-identical bytes used to mean "you forgot to compile". After
+a compile in the same call they mean the opposite, and say so: the compile ran, so the edit is not in
+the source tree that project compiles - and a Gradle that answered `UP-TO-DATE` has said the same
+thing in its own voice.
+
+**What the live run corrected.** A compiler that fails says it three times: javac's report, Gradle's
+`FAILURE:` banner repeating it indented, and advice to re-run with `--scan` - 1400 characters to say
+`cannot find symbol` once, on the most frequent action in a modding session. The banner is dropped
+**when there is an `error:` above it**, which is the whole rule: a jar lock says its piece in the
+banner and nowhere else. 430 characters after the fix, measured live. And the subprocess's output is
+drained on a thread of its own: reading it on the calling thread makes `readAllBytes` the timeout,
+and it returns at EOF, which a hung Gradle never reaches.
+
+**Section 7: the wiki.** `hotswap` appeared in **zero** files under `wiki/` - the manual written for
+the person rather than the agent taught the four-minute restart as *the* loop. It could only be
+written after sections 1 and 3 landed, because those changed what the honest advice is:
+`wiki/the-change-loop.md` now carries the one-call route, the mixin tier, the bytes-are-new-the-
+objects-are-old rule with `reinit`, and `{status: true}` in place of the trap that used to end *"if
+you have lost track, restart"*. Three other pages that spelled out the two-step loop
+(`blocks-and-items.md`, `debugging.md`, `gui-screens.md`) were corrected with it.
+
+Confirmed live in a running client, one call at a time: a field added to `ping`'s handler and read
+back out of the next `ping`; the same call again refused with `compileJava UP-TO-DATE`; a broken line
+answered with javac's own error; and `GradleCompile` hot-swapped by the compile step it is. 228 unit
+tests green (12 new).
+
+## 0.152.0
+
+**A SWAP THAT LANDS AND CHANGES NOTHING, CLOSED FROM THREE SIDES (`HOTSWAP_CEILING.md` sections 3, 4
+and 5, built and confirmed live in one run).** The three were separate findings and are one defect:
+`redefined: 1` is equally true of a swap whose bytes were never new, a swap whose new bytes nothing
+will run again, and a swap you have lost count of. Every one of them reads back as agreement.
+
+**The bytes are new, the objects are old.** `redefineClasses` replaces bytecode; it does not rebuild
+the object graph the old bytecode already produced and it does not re-run a static initialiser - so a
+screen keeps the widgets its old `init()` built, a mob keeps the goal list its old `registerGoals()`
+made, a registry keeps the one `Block` built at registration, and all three report the same success.
+Every swap reply now carries a **`reentry` block**: per class, the KIND of thing it is in this running
+game, what old state survives, and what would make the code run again - with live evidence where the
+game is cheap to ask, because *"the client is on this screen right now"* and *"you are not on it"* are
+different advice. Kinds are decided by real class references (`Mob.class.isAssignableFrom`), never by
+name, so they survive remapping; `Screen` is the one kind common code may not name, and it is
+delegated to a client seam, which is also what makes the whole screen path testable with no game.
+
+**`reinit: true` performs the two re-entries nothing else can reach.** It rebuilds the current
+screen's widgets - `Screen.resize` -> `rebuildWidgets` -> `init()`, the vanilla path a window resize
+takes, which keeps the screen's own fields and is the ONLY re-entry that works for a container screen,
+whose menu lives on the server - and it re-runs `registerGoals()` on every loaded instance of a
+swapped `Mob` class, through an `@Invoker` rather than a reflective lookup by a name that only exists
+in a dev workspace. It says what it destroyed: goals added from outside `registerGoals()` are cleared
+with the rest. Confirmed live both ways: a logging line added to `InterpretedScreen.init()` did NOT
+run on the swap and DID run on the re-entry, on the Render thread; the same for
+`BotBodyEntity.registerGoals()` on the Server thread, on the one loaded body.
+
+**Bytes identical to what is already running are refused, not reported as a redefine.** A forgotten
+(or misdirected) `compileJava` is the most common failure of this loop and it used to report itself
+as its success. Two exact sources: what the JVM is running, read back through a capturing retransform,
+and what this session pushed before. **The live run corrected the premise**: in a Fabric dev run the
+bytes Knot loaded are NOT the bytes on the `.class` file (same length, different content, measured on
+an untouched class straight after a clean build), so the FIRST swap of a class cannot be decided that
+way at all - and from the second on it can, exactly, because the first redefine installed the file's
+bytes verbatim. So the check asks the ledger first and reads the JVM back only for a class it has
+already swapped, which also means a first swap retransforms nothing; and every reply carries
+`compiled_at`, the mtime of the bytes just installed, because on the one swap neither source can
+decide, that is what separates "I recompiled" from "I forgot to". A capturing retransform is never
+asked of a mixin SHELL: Mixin's agent is a retransform-capable transformer, so it would re-apply the
+mixin to its targets - a real act performed to answer a question.
+
+**`{"status": true}` lists live divergence from the built jar** - class, when, source, digest, swap
+count. `LIVE_MODDING.md` used to state the gap and prescribe amnesia ("if you've lost track,
+restart"); a four-minute restart was being spent to recover a fact the process had held all along.
+
+**The loop taught one more thing, which is in the tool now.** `reinit` had to be legal on UNCHANGED
+bytes: what a caller actually does is swap, look, see nothing move, and ask for the re-entry - and
+that second call carries the same bytes, which the paragraph above had just made a refusal. Unchanged
+bytes plus `reinit:true` redefine nothing, run the re-entry, and say both.
+
+`LIVE_MODDING.md` gains the general rule in the `hotswap_class` section and a decision-table row; the
+one place it used to gesture at re-entry (a container-screen aside under UI) now points at it.
+
+## 0.151.0
+
+**THE CHECK, TWO NOTCHES FURTHER: WHAT A JOINT EXPLAINS, AND THE HAIR BETWEEN ONE PLANE AND A CLEAR
+LIFT (entity plugin 0.7.0).** Two items from the 0.149.0 reading: the one it recorded as a decision
+owed, and the first of the list it left in order of bite.
+
+**The animated overlap tolerance is rest-aware now, and the rule is "what a joint explains".**
+0.149.0 recorded that a limb on the RIGHT pivot reads as an overlap: a 4 px leg sunk half a pixel
+into its hip swings 30 degrees and buries one top corner 1.5 px deep, past the flat 1 px sink
+tolerance the arm used at every sample - invisible, inside the body, and how every vanilla
+quadruped's hip works; the beetle walk was clean only because its legs are narrow. The two options
+in that entry were a per-sample tolerance that knows the pair was in contact at rest, or a rule that
+a burial is a finding only when the far corner EMERGES. The first was built. The second would name
+vanilla's own animals - `QuadrupedModel` swings a leg through 1.4 radians, and at that amplitude a
+leg's top corners cross the body's bottom plane both ways on every stride - and the numbers the
+first needs were already in the arm's hands. For a pair the rest table put in contact (sunk,
+coplanar, near, or a gap under a thousandth of a pixel) the tolerance at a sample is
+`sinkPx + reach * sin(angle)`: `angle` the pair's rotation RELATIVE to its rest orientation (so a
+body that bobs over a still leg is the same swing as the reverse), the swing direction in the
+contact plane perpendicular to both the contact normal and the turn's axis, `reach` the SMALLER
+box's extent along it - the joint is at the limb's face, so it is the limb's half-width that
+reaches, never the body's. A pivot placed up the thigh, a position channel that drives a limb in, a
+limb passing through a part it never touched at rest: all exceed that and are named as before, and
+the line now says what the joint explained of it - `animated swing @0.5 slab | leg 3.00px (a 30 deg
+joint swing explains 2.00)` - which is the number the author subtracts. A burial the joint explains
+is not a finding, and it is not hidden either: the long form lists it under "buried past 1px but no
+deeper than the joint swing reaches", on the rule the sunk row has always kept, that a tolerance
+which hides its subject is a blanket skip.
+
+Worst sample per pair is by EXCESS over its own allowance now, not by depth, so a 2.9 px burial a
+swing explains 2 px of ranks below a 2.5 px burial nothing explains. The explained list is kept by
+depth, for a reason the fixture found: a limb on the right pivot has the SAME excess at every sample
+(burial and allowance both grow by reach times the sine), so excess cannot pick one. Fixtures: the
+4 px leg through 30 degrees clean and reported (`1.500px <= 2.00 at 30 deg`); the same leg with its
+hip driven 1.5 px in at the peak, named at 3.00 px against 2.00; and driven in with no swing at all,
+named against the plain 1 px - a joint that has not turned explains nothing.
+
+**`near`: the band between one plane and a clear lift.** Two parallel faces sharing area, apart by
+more than the plane epsilon (0.0005 px) and no more than 0.1 px, read `clear` - or `sunk`, when the
+lift went the other way. They are not one plane, so the coplanar rule was right to pass them, and
+they z-fight all the same from far enough away: 24-bit depth at thirty to seventy blocks resolves a
+few hundredths of a model pixel, so a 0.05 px lift flickers there exactly as a flush face does up
+close. It is the plane detector one notch wider (`sharedPlanes` returns both kinds, best shared area
+each), a finding ranked below coplanar and above sunk, with the lift in its line: `near body/base |
+cap 0.050px apart over 36.0px2 (z-fights at distance: sink it >= 0.5px or lift it clear)`. The
+band is a setting (`nearPx`; `near:` on any call) beside `sinkPx` and `coplanarEps`; authors work
+in halves and quarters, and nothing deliberate lives inside a tenth. Fixtures: a cap lifted 0.05 px
+(near), sunk 0.05 px (near, ranked above sunk - a sink that shallow is not the anti-z-fight trick,
+it is the z-fight), lifted 0.2 px (clear: the band has an outer edge).
+
+175 checks in the harness, from 164; loop-hook and loop-examples probes green. The three loop agents'
+check vocabularies name both lines. **Still owed, in the same order:** shell occlusion
+(`LOOP_KIT_DESIGN.md` 5.4), sheet size versus `doc.resolution`, loop closure and keyframes past the
+clip length, a bone pivot far from its cubes; and the live confirmation of the 0.6.0 push gate on a
+`bog_toad` rerun.
+
+## 0.150.0
+
+**THE MIXIN TIER, CONFIRMED IN A RUNNING GAME - AND THE FIVE THINGS THAT ONLY A RUNNING GAME COULD
+SAY.** 0.149.0 shipped the mixin tier offline-green and live-unrun, because the flag it turns on is
+read once at startup and no game had yet been started with it. Two games ran it: one from this build,
+and one **deliberately launched with `-Dmixin.hotSwap=true` commented out**, because a mechanism only
+ever observed switched on has not been observed to do anything. The headline holds. A body edit to an
+existing `@Inject`, `gradlew compileJava`, `hotswap_class` on the MIXIN - and the edited line runs in
+the world, on the render thread, with no restart; `[FabricLoader/Mixin/agent] Redefining mixin ...`
+logs it on our own HTTP thread; swapping the pristine mixin back reverts it. The flag-off game logs
+no `Attempting to load Hot-Swap agent` at all and answers every swap with `mixin_note`. The classpath
+default turns out to work for a mixin, which was not obvious: the agent's shell has no code source,
+but its classloader delegates the RESOURCE to its parent, so no `dir` argument is needed.
+
+**The premise under the first cut was wrong in a way only the game could show: a mixin is loaded
+ONCE, not twice.** The record said the Knot copy and the agent's shell; live, Knot never defines one
+at all, because a mixin is applied and not run. Four of the five defects follow from that, and all
+four are on the path a FIRST mixin swap takes:
+
+- **`query_class` on a mixin threw Mixin's own error.** `Class.forName` does not find the wrong copy
+  of a mixin - it asks Knot to load one, and the transformer refuses: `RuntimeException: Mixin
+  transformation of ... failed`, surfaced raw. The natural first move, prechecking the class you are
+  about to swap, failed on exactly the classes 0.149.0 had made swappable. Now a refusal that says a
+  mixin is applied rather than loaded, that the only runtime copy is the agent's shell, and that a
+  swap attaches the agent which reveals it.
+- **`mixin_class` and its `route` were unreachable.** The check looked for a SECOND loaded copy that
+  was a shell, and the class being asked about WAS the shell. A shell is now proof by itself, and a
+  shell is reported as one (`mixin_shell`, and a note that its empty method table is empty by
+  construction and says nothing about the mixin's source - read the target for that).
+- **The precheck contradicted the tool it prechecks.** `query_class` read the class's CODE SOURCE
+  where a swap reads the loader's RESOURCE; on a shell those disagree, so it said "no code source ...
+  pass 'file' or 'dir'" about a swap whose classpath default then worked. One `classpathResource`
+  shared by both, so the precheck reads what the swap reads.
+- **"class not loaded" pointed the wrong way.** On the flag-off game a mixin swap answered "there is
+  nothing to redefine, and a class that loads later reads the new bytes off the classpath by itself" -
+  true of an ordinary class, FALSE of a mixin, which never loads and whose targets keep the old
+  injector until a restart. The likeliest mixin swap on the likeliest broken setup got a reassuring
+  refusal naming neither the flag nor the rebuild. Both tools name them now, whenever the state is
+  known-unarmed.
+- **A DECLINED re-apply reported as five words.** The open question from the record, answered better
+  than feared and worse: Mixin returns `ERROR_BYTECODE` when `reload()` throws, the JVM rejects it and
+  NOTHING is redefined - so a declined re-apply never masquerades as success. But `ClassFormatError`
+  is an `Error`, so it escaped `catch (Exception)` and arrived as the bare string
+  `java.lang.ClassFormatError`: no mixin, no cause, no fix. Measured with a new `@Inject`, the
+  structural case, whose real log line is `Error while finding targets for mixin` - **not** the
+  `cannot be reloaded, needs a restart to be applied` the record predicted. The reply now says Mixin
+  declined, that the targets still run the old injectors, that a new injector is the usual cause, and
+  where Mixin's own reason is.
+
+That last fix was **installed into the running game by `hotswap_class` itself** and confirmed there,
+with no restart - a method-body edit to `HotswapTools.hotswap`, the tier repairing itself.
+
+204 unit tests green, of which 2 are new: the first-non-shell copy rule (`getAllLoadedClasses` has no
+defined order, so "the first match" is a coin flip between a class and its stand-in), and the
+resource the precheck and the swap now share. `docs/platform/HOTSWAP_CEILING.md` carries the run as
+"As built -> section 1, confirmed live", including what is still owed - a mixin whose targets are MOD
+classes rather than vanilla ones, and the dedicated-server run.
+
+## 0.149.0
+
+**THE MIXIN TIER WAS DECLARED IMPOSSIBLE, AND MIXIN HAD SHIPPED THE ANSWER YEARS AGO.** A reading
+pass over the whole change-to-game loop (`docs/platform/HOTSWAP_CEILING.md`, seven findings) asked
+one question - have we taken hot reload as far as it goes, or did we stop at the first hard edge and
+write the edge into the documentation as physics? - and three of the seven stops turned out to be
+soft. This release closes the first. `LIVE_MODDING.md` said **MOD CLASSES ONLY**, `query_class`
+reported `safe: false` for anything with a merged mixin method, and both were true of a naive
+redefine and false as statements about what is possible: `sponge-mixin-0.17.4`, already on this
+project's runtime classpath, ships `org.spongepowered.tools.agent.MixinAgent` with `Agent-Class`,
+`Can-Redefine-Classes` and `Can-Retransform-Classes` in its manifest, and `MixinTransformer`'s
+constructor reflectively instantiates it at startup when `-Dmixin.hotSwap=true`. **We had never set
+the flag.** Editing the body of an existing `@Inject` - the most common mixin edit there is - has
+cost a four-minute restart for the life of this project, for a launch argument.
+
+It is set on both loom runs now, and in `gradle-conventions` so it reaches every consumer's game -
+the same lesson `-Djdk.attach.allowAttachSelf=true` taught once already, when it lived only in the
+toolkit's own build file and `hotswap_class` was therefore quietly unavailable everywhere else.
+`MixinHotswap` arms Mixin's agent with the instrumentation `HotswapTools` already self-attaches
+(`MixinAgent.init` is public static and exists for exactly this late arrival), so nothing needs a
+`-javaagent:` on the command line.
+
+**The lookup had to change, and that is the part worth remembering.** Mixin's agent keeps a second
+copy of every mixin - a bare SHELL carrying the mixin's name, in its own classloader - and it is the
+shell's redefinition that the agent intercepts: it reads the submitted bytes as the new mixin, asks
+`IMixinTransformer.reload` which targets are affected, retransforms those against their ORIGINAL
+bytes, and then returns the shell bytecode so the redefinition actually installed adds no method and
+no field. `hotswap_class` resolved exactly one class, through `Class.forName` on our own loader, and
+would have redefined the copy the agent is not watching - reporting success while every target kept
+running the old injector. It redefines **every loaded copy of the name** now, through
+`Instrumentation.getAllLoadedClasses()`, which is also how a debugger does it. A class that is not
+loaded at all became a refusal rather than a redefine, because `Class.forName` was LOADING a class in
+order to replace bytes nobody was running.
+
+The other direction is now refused by name: a mixin **target** handed to `hotswap_class` is rejected
+and told which mixin to swap instead, closing the silent-drop hole the MOD CLASSES ONLY rule could
+only warn about. `query_class`'s `hotswap` block gained the matching `route` line, and a `mixin_class`
+flag proved by the agent holding a shell rather than by reading `@Mixin` - because the useful question
+is not "is this a mixin" but "is this a mixin the agent is armed to re-apply". Two limits are stated
+in every reply rather than discovered: the flag is read ONCE at startup, so a game booted without it
+cannot be armed later (the reply says so, and says to rebuild), and only the injector's BODY may
+change - a new `@Inject` adds a handler method to the target, which is structural. A re-apply Mixin
+itself declines logs `cannot be reloaded, needs a restart to be applied`, which is Mixin's refusal
+downstream of ours, so a mixin swap is a call to read the log after.
+
+202 unit tests green, of which 4 are new. **Offline-green and LIVE-UNRUN**: no game was up for this
+one, a test JVM can only reach the account given when the agent is NOT armed, and the flag only
+reaches a game started after this commit - so the first rebuild is what can confirm it. *(It did, the
+same day: 0.150.0 below is that confirmation and the five defects it found.)*
+
+Also in the record and NOT built: **the structural limit is a launch configuration too.** JBR 25.0.4.1
+accepts `-XX:+AllowEnhancedClassRedefinition` (DCEVM) where the stock Temurin 25 this project builds
+on refuses the flag outright - the falsifier that makes the acceptance mean something. Minecraft 26.2
+requires Java 25 and JBR has a 25 line, so the route that would let a swap ADD a method is open and
+unwalked; `HOTSWAP_CEILING.md` section 2 says what is proven (the JVM exists and takes the flag) and
+what is owed (that Minecraft boots on it at all).
+
+**THE ENTITY CHECK, READ FOR WHAT REACHES THE GAME UNNAMED (entity plugin 0.6.0).** A reading pass
+over the Blockbench loops asked one question of `mcptoolkit_entity.js`: which defects can a model
+carry into the running game without the check having said a word? The mechanical core held up - the
+shared-plane detector measures real shared AREA in world space and runs on every pair even when SAT
+calls it touching, the overlap arm walks bone chains with inflate and scale, the UV audit proves
+paint landed per face, and the sampler visits keyframes AND midpoints by vanilla's rules. Four gaps
+around it, each now a finding with a harness check (164 in the battery, from 138):
+
+- **A push never ran the check.** `doPush` converted and staged whatever it was handed, so a model
+  with three coplanar pairs was photographed in the game and the loop relied on the agent obeying
+  "fix what it names" on the reply before. A headless push now runs the battery LAST among its
+  refusals (after target, texture name, source root, sync plugin and bridge - those are the
+  surprises; the check's lines are what the author has already been shown on every editing reply)
+  and refuses with those lines when it has problems. `force:"<why>"` (a string; the reason is the
+  record, the loop kit's own convention) pushes anyway, and the reply carries `forced` and a
+  warning. Every reply carries `check {problems, notes, text}`. The panel's button forces, because a
+  person at the panel is judging by eye and the button has nowhere to type a reason.
+- **`detached`: the mirror of the animated overlap arm.** A pair in contact at rest (sunk, coplanar,
+  or gap 0 - a leg in its hip, a jaw on its skull) that opens a gap wider than the sink tolerance at
+  a sampled pose is the signature of a pivot in the wrong place: a leg pivoting at the joint rotates
+  INTO the body at one corner and stays in contact, one pivoting at the foot swings the whole leg
+  away and shows daylight through the hip. It only ever looks at pairs the rest table already put in
+  contact, so two forelegs cannot name each other however far apart they swing. Worst sample per
+  pair per clip, counted as its own kind (`animated.detached`), a `!` line that asks the question
+  that fixes it. Fixtures: a sunk slider that slides away (5.5 px at t=1, arithmetic in the file), a
+  2 px leg on the right pivot through 25 degrees (clean), the same leg on its foot through 60
+  degrees (detached by the gap the file computes).
+- **A fractional cube size is a finding of its own.** The first live run placed a 2x4.5 leg and the
+  check's only word for it was `stray`: the painter fills the half row whole and the arithmetic
+  counted it as paint outside every face, which sends the author to the sheet when the defect is
+  the cube. What the game does with a 4.5 px face is sample half a texel of its neighbour. Now
+  `fractional <cube> size 4x6.5x2 is not whole on y`, first in the UV list, and the coverage walk
+  rounds each face OUT the way the painter fills it, so one fractional cube is ONE line and not a
+  stray count plus an arithmetic mismatch that both mean it.
+- **Paint is counted at the game's alpha cutout.** `entity.fsh` discards `color.a < ALPHA_CUTOUT`
+  and the entity pipeline compiles that at `RenderPipelines.ALPHA_CUTOUT_THRESHOLD_DEFAULT` = 0.1,
+  so alpha 25/255 is a hole in the world and 26/255 is paint. The check counted `alpha > 0`, which
+  is a face that reads complete on the sheet and torn in the game. `ALPHA_MIN = 26` now gates the
+  whole-sheet count, the per-face walk and the stray count; texels between 1 and 25 are a `faint`
+  NOTE with the count and the threshold (the hole they make is already the `unpainted` or
+  `partial` line on the face they sit in, so the note explains and does not fail twice).
+
+**A tolerance question the detach fixtures surfaced, recorded rather than settled.** The animated
+overlap arm uses the rest sink tolerance (1 px) at every sample. A limb on the RIGHT pivot buries
+one corner deeper as it swings - by half its width times the sine of the angle - so a 4 px wide leg
+sunk 0.5 px swings 30 degrees and reads as a 1.5 px overlap, which the arm names. That burial is
+inside the body and invisible; it is also how every vanilla quadruped's hip works. The beetle walk
+was clean because its legs are narrow and its swings 25 degrees. A wider-limbed walk will meet this
+line, and the answer (a per-sample tolerance that knows the pair was sunk at rest; or a rule that a
+burial is only a finding when the moving cube's far corner EMERGES from the neighbour) is a design
+decision, not a bug fix - so it is here and in the harness comment, not quietly widened.
+
+**Still owed from the same reading, in order of how likely they bite:** near-coplanar faces (two
+parallel faces 0.01 px apart flicker at distance and read `clear`; a `near` band below ~0.1 px);
+shell occlusion (a face fully buried in its neighbour is still demanded painted - LOOP_KIT_DESIGN.md
+5.4 already records it unbuilt); sheet size versus project resolution (the UV audit takes the sheet
+from `doc.resolution` and the pixels from the texture canvas, and nothing says so when they
+disagree); loop closure and keyframes past the clip length; a bone pivot far from its cubes.
+
+## 0.148.0
+
+**THE NEW DOOR WAS HARDENED AGAINST A CALLER THE OLD DOOR STILL LET IN.** A reading pass over both
+front doors and the shim (`docs/platform/BRIDGE_AUDIT.md`, nine findings) turned up one that was not
+a bug in anything new: `mcp/McpEndpoint` spends code and a test refusing a non-loopback `Origin`, and
+`IN_JAR_MCP_DESIGN.md` section 5 states the reason in its own words - *without the check, any page the
+human happens to have open could POST to this port and drive their game* - while `POST /cmd`, the door
+that serves the WHOLE manifest with no surface slicing, checked nothing. It does not look at
+`Content-Type` either, which is the half that makes it reachable rather than theoretical: a
+cross-origin `fetch` declaring `text/plain` is a CORS **simple request**, sent with no preflight, and
+although the page cannot read the reply the side effect has already landed in the world.
+`run_command` and `hotswap_class` are behind that, and the port is not a secret. The rule outgrew one
+door, so it lives in `BridgeOrigin` in the root package now and **all seven private handlers call it
+first** - `/cmd` before its `Sessions.touch`, so a page cannot keep somebody's session alive either,
+and `/hello`, which mints one. No token and no client allow-list: neither buys anything against this
+caller and both would break every `.mcp.json` in the workspace. An absent `Origin` is still served,
+because curl, the shim and every non-browser client send none. `ARCHITECTURE.md` now says what
+"localhost-trusted" does and does not cover, because this was never an authentication control.
+
+**A bind retry that lands after shutdown pins the JVM.** `start` retries a contested bind for 90
+seconds and nothing said a shutdown had happened, so the normal reaction to the retry's own warning -
+the person reads "another process holds the port" and quits - ran `stop()` against `http == null`
+with nothing to close, and a later retry bound a server nothing would ever stop. That is the zombie
+`stop()`'s javadoc already describes: a JVM that does not exit, holding the port and the jar's file
+lock, and on a client a shutdown-watchdog crash report for a game that did not crash. Both are
+failures this workspace has paid for once, and the victim is the NEXT game. A `volatile stopped` flag
+set first in `stop()` ends it; the shutdown hook is registered **once in `init`** instead of per
+successful bind, which also closes the nastier corner - `addShutdownHook` throws
+`IllegalStateException` once shutdown is in progress, neither type `start` catches, so a retry
+landing mid-shutdown left a live server with no hook, no log line, and nothing that could close it.
+
+**An MCP client that spends three minutes thinking came back to a destroyed body.** A toolkit session
+unseen for three minutes is reaped - drones destroyed, possessions released, the `locate` anchor
+ledger dropped - and the Node shim POSTs `/heartbeat` every 30 seconds because of it. The in-jar door
+had no equivalent: its session was refreshed only by an actual `tools/call`, so a client that
+JSON-RPC-`ping`s perfectly on its SDK's cadence still went stale, and `McpConn`'s own thirty-minute
+idle clock outlived the identity it owns by ten times. Every request on that door is the keep-alive
+now (`Sessions.touch` in `McpEndpoint.post`, beside the connection lookup - not in `McpProtocol`,
+which goes on naming no `Sessions` and testing offline). And the reap now actually does the job
+section 6 gives it: it calls `Sessions.abort`, where before it dropped the connection and left the
+session, and the thing ending those sessions was the three-minute staleness the reap has nothing to
+do with. The code worked; the stated mechanism was not the one running.
+
+**A surface called `survival` was quietly a research profile.** The surface name travels to
+`BridgeServer.execute` in the parameter the shim fills with its PROFILE, and `ToolContext.legal()`
+was `"survival".equals(profile())` - so naming a surface after the game mode you play flipped
+`check_path` into knowledge-masked mode and withheld `audit` rows from `get_events`, and there was no
+way to ask for player-legality on purpose either. `legal` is a declared field on `McpSurface` now
+(`"legal": true` in the config file, inherited from `base`), the invoker hands the dispatcher the
+whole surface rather than its name, and `execute` takes legality beside the profile - null meaning
+"derive it", which is what the shim passes and why nothing shim-side moved. And a surface written
+`"Build"` used to install, list, and then 404 at `/mcp/Build` and `/mcp/build` alike while vanishing
+from `/mmcp mcp`: names fold to lower case at `put` now, and the rename is logged.
+
+**Three one-liners with no decision in them.** `warnOversized` counted UTF-16 code units and called
+them bytes, so every result carrying a translated block name or a line of chat under-reported against
+the 8 KB budget and the tripwire tripped late on exactly what it exists to catch. A malformed
+`_image` reached the model as an image part with `data: ""` - a blank picture with nothing saying it
+is blank, which is the uncapturable-observation failure the envelope exists to prevent - and is an
+`isError` refusal now, saying so in the words the model needs. Shim-side (**mcp-server 0.75.0**):
+`MECHANISM` and `DECLARES_FORCE` are built fresh and swapped instead of cleared in place, closing the
+window where a call overlapping the 3-15s manifest rebuild read an empty map, got a null mechanism,
+and skipped its loop check silently; and the survival description override built new objects the way
+`decorate` does, instead of writing through to `scan.mjs`'s module-level singleton.
+
+198 unit tests green, 12 of them new. Live confirmation of the first three is still owed and is
+written down at the top of `BRIDGE_AUDIT.md`: unit tests cannot show a browser being refused, a JVM
+exiting, or a body surviving five idle minutes.
+
+**Section 13 of the isolation record: what a person still could not do to a window, built - plugin
+0.11.0, shim 0.75.0, sync 0.5.0, entity 0.4.0** (`docs/models/BLOCKBENCH_ISOLATION_DESIGN.md`
+section 13, a review of 0.10.0 done as a reader and not as the builder).
+
+*Eviction is said, not enforced.* A claim steers discovery and nothing else - 6.3 stands - so nothing
+a person did to a window reached the session in it: the dock's Take back, the menu's take-back and
+the fifteen-minute recycle all dropped `claimedBy` while the shim kept its cached window, kept
+calling into it, and `ping` went on answering `held: "this session"` out of the shim's own cache.
+Two routes now carry the news, both ones the shim already had. Every `/cmd` reply from an agent
+window whose holder is not the caller carries a `window` note (the same place and shape as
+`sharedIdNote`); the shim reads it, forgets the window, closes presence, and puts the sentence in
+what the agent reads - which window it lost, to whom, that the next call resolves one of its own.
+And the recycle - only the recycle, because a presence socket also keeps a session's PROJECT
+BINDINGS alive and only a recycle happens to an empty window - writes one last `evicted` line on
+the evicted session's presence socket before closing it, so a shim between calls hears it on its
+next poll. `ping` reports a lost window as lost, with the sentence. The call that carried the news
+still runs, in the window it was sent to; refusing it would be enforcing the claim.
+
+*A queued call is dropped when its caller is gone, and the queue is visible.* One queue for every
+session and a two-minute ceiling in the shim, and no check that the request was still open: a
+`place_cube` queued behind a long push RAN after the agent was told it failed, and the retry doubled
+it. The plugin checks the socket at the call's TURN and skips a dead one, recorded in the panel's
+recent calls; `/hello` and every beat carry `queue: {running: {name, session, s}, waiting}`; on a
+timeout the shim asks `/hello` once and says what it found - "Blockbench is running `risky_eval`
+from session X for 130 s; this call was queued behind it, gave up, and has been dropped" - and the
+dialog sentence stays only for the case where nothing is running.
+
+*Settings live in the store, not in the window.* `settings` was read once at `onload` and every
+window enforced its own copy, and a save wrote the whole stale copy back: a ceiling changed in
+window A was not the ceiling the dock applied, and the next `dock_port` hint saved from another
+window overwrote A's change. `saveSettings` reloads before it merges, and every window reloads on
+the `storage` event - MEASURED 2026-09-13 between two real Blockbench windows, both hidden, three
+writes out of three including a delete - so every reader sees one value everywhere.
+
+*A dock survives an internal restart and not an explicit stop.* `stop()` nulled `boundPort` before
+comparing it to `dock_port`, so a stopped dock never cleared its hint; and `start()` restarted the
+dock scan for nobody, so a stopped-and-started dock kept `isDock` and never scanned again. A
+base-port change now restarts through one path that keeps the role and rescans; Stop the bridge
+from the menu resigns the dock and says so. "Make this window the MCP Dock" asks where the dock is
+first, as Open does, and refuses with the port.
+
+*The door refuses a browser* - the same `BridgeOrigin` rule as the game's two doors above, in
+JavaScript, MEASURED FIRST: the Blockbench renderer (a `file://` page) sends NO `Origin` on its
+cross-window fetches, GET or POST, so the dock's beats are the same case as curl. A refusal shows
+in the panel's recent calls.
+
+*Smaller.* An idle session re-asks the one window it last read the manifest from and sweeps the
+range at most once a minute, not sixteen ports every three seconds per session with the game down.
+A handoff lives as long as its ask (`birth_ms`), and giving up an ask drops the handoff, so a window
+a person opens by hand in the gap is theirs. A window closed by hand is named ("window N (port P)
+is gone - closed by hand? - Blockbench is still open and the next call gets a window of its own")
+where the old sentence was "Blockbench unreachable". The dock's Adopt is "Give to agents" and
+Release is "Take back", and a row with a project open asks once. Status... is painted from the same
+rows as the start screen, with the raw JSON behind one button. `risky_eval` puts a third local in
+scope, `SESSION`. And port 0 is port 0: the harness's ephemeral-port sections had been folding it to
+25801 in every scan and registering test processes in the developer's real dock.
+
+*The companion plugins.* `bridge: null` and `project: null` fell through to the stored URL and the
+active tab in both - the refuse-on-null rule of 0.140.0 held for an ABSENT key, not for the `GAME`
+an agent dutifully passes when it is null. Both refuse an explicit null and name the fix; `target`
+is checked against its three values (`'game'` used to push nothing and answer `ok:true, pushed:N`);
+the entity panel renders the bridge field it already modelled; the headless settings call merges
+per-project maps as the panel does; a stage failure answers `ok:false` WITH the `pushed` and `model`
+that landed; the sync default namespace `villagejobs` is gone and the call refuses without one (the
+dialog remembers per project); and the preview tag carries the session id when `risky_eval` hands
+`SESSION` over, so two sessions on one game stop overwriting each other's entity.
+
+**THE ENTITY LOOP RAN FROM A BRIEF FOR THE FIRST TIME, AND THE PARTS THAT WERE WRONG WERE AROUND
+IT.** `entity-loop/` in the workbench is the workspace (its README is the record): the source shim,
+a loop file whose check is `mcptoolkitEntity({action:'check', project: PROJECT, previous:
+__previous})` on every editing reply, an agent for a weaker model, and one brief with every call
+written out. A headless qwen3.8-flash session built seven bones and seven box-UV cubes, one sheet,
+one `paint_faces`, one contact sheet, and pushed - 23 turns, under two minutes. Three things the run
+found, none of them in the loop itself:
+
+- **`screenshot` waits for a loading overlay to clear.** A push ends in a resource reload, and a
+  screenshot 281 ms after it photographed the Mojang splash with its progress bar two thirds along:
+  a true picture of the framebuffer and a lie about the world, handed to a model that had just been
+  told the entity was standing in front of it. The capture now waits while `gui.overlay()` is
+  non-null (bounded at 20 s), reports `waited_for_overlay_ms` when it waited, and says so if the
+  overlay was still up at the bound. Measured 2.8 s after `reload_resources`.
+- **Entity plugin 0.4.1: the check answers in the checker contract even when there is nothing to
+  check.** It fired after `project op:new` and after `op:close` and answered `{ok:false, error}`
+  both times, which the shim can only report as `check "entity" could not run` - on the very reply
+  that created the project. An empty project or no project is a zero-problem report with one note;
+  what convert refuses (a per-face UV cube, a non-cube element) is one problem carrying convert's
+  own sentence, because that IS a finding.
+- **The shim's window ask has its own timeout (45 s).** `POST /window` took 12 s and 40 s to
+  answer on this machine - the plugin scans its range sequentially, tries to hand over an empty
+  agent window, and only then clicks New Window - against a 4 s fetch timeout, so every session
+  read "asked for one and none appeared", shared 25802, and still left behind a window nothing
+  claimed. The plugin-side half (a born window taking minutes to answer on a port; the sweep that
+  should close an unclaimed one not firing; `curl` timing a refused loopback port at 2 s where node
+  refuses in 70 ms, which contaminated the first measurements) is recorded in
+  `BLOCKBENCH_ISOLATION_DESIGN.md` 13.5 for the next pass.
+
+Also learned and written into the brief rules: keep cube SIZES integer (a 2x4.5 face is painted as
+2x5 and the half rows count as stray paint); positions may be fractional, which is how a leg sinks
+0.5 into a body and the check calls it a tolerance rather than an overlap.
+
+**THE SECOND CUT OF THE ENTITY LOOP: A DESIGNED MODEL, AND A CLIP ON IT.** The first run above
+dictated every number; a brief that DESCRIBES a creature needs two levers the toolkit did not have,
+and a clip needs a loop of its own (`entity-loop/.mcptoolkit/animation.loop.json`, selected with
+`MCPTK_LOOP`; `LOOP_KIT_DESIGN.md` section 13).
+
+- **`place_cube uv:"pack"` (bridge plugin 0.12.0).** Laying a sheet out is labour, not judgement:
+  the plugin takes the box-UV footprint a cube will need (2(d+w) by d+h, whole texels) and finds it
+  the top-most, left-most free rectangle on the current sheet against every box-UV cube already
+  there, or refuses with the size needed and the two ways to grow the sheet. Seven checks in the
+  harness, including a cube placed by hand counting as taken and a fractional size packed on a
+  whole-texel footprint.
+- **`mcptoolkitEntity({action:'flipbook', clip, frames|times})` (entity plugin 0.5.0).** A clip is
+  judged in the game as a ROW OF FROZEN POSES in one picture: it pushes, sweeps the session's
+  preview, stages N copies frozen at N times side by side (`clip_time`), and answers with the block
+  box and the yaw that faces the row, ready to hand to `render` unchanged. `clear` sweeps the row
+  with the slot. A contact sheet is a grid of stages, composed by the world itself.
+- **`reload_resources` answers only once the loading overlay has cleared.** The reload future
+  completes before the screen does: the first flipbook rendered 300 ms after its push and got an
+  empty sky, then four magenta error cubes, then the model two seconds later. The tool now polls
+  `gui.overlay()` after the future (bounded at 15 s, `overlay_cleared_after_ms` when it waited),
+  and **`render` refuses while an overlay is up**, in its own refuse-rather-than-lie manner.
+- The animation loop's brief and agent carry the sign convention in the rig's own frame (positive
+  X on a hanging leg swings its foot forward, toward -z), confirmed by scrubbing a walk clip in
+  Blockbench and by the flipbook in the game.
+
+Left for the person: window 25806 (the one the first runs used) lost its bridge when the plugin
+file changed under it and has not rebound a port; Tools > MCP Toolkit Bridge > Start in it, or
+close it. A window born from an ask still takes minutes to answer (13.5).
+
+**Shim 0.76.0: a relative `path` means the workspace.** `project op:save {path:"models/x.bbmodel"}`
+reached Blockbench as written and Blockbench resolved it against its own install directory (the
+bog_toad run saved only with an absolute path, one turn later). The shim now makes a relative
+`path` absolute against its cwd - the directory the loop file lives in - for every Blockbench tool
+that takes one, and a probe holds it to that. With `ASK_TIMEOUT_MS` above, that is the shim's part
+of this release.
+
+**The qwen runs, measured** (`LOOP_KIT_DESIGN.md` section 13): the described toad in 49 turns /
+7 min / $1.28 - designed, checked clean, pushed, rendered, saved; the beetle walk in 17 turns /
+1.9 min / $0.37 - authored, nine poses sampled clean, flipbooked, rendered, saved. The same two
+briefs on sonnet follow.
+
+## 0.147.0
+
+**THE DOCK WAS RUNNING THE WHOLE TIME AND NOBODY COULD SEE IT.** Two days after 0.145.0 shipped the
+MCP Dock, the report was *"still 8 windows open... nowhere are mcp control screen... 7 mcp bridge
+entries are taking over the tools menu"* - and `GET /dock` on that machine answered with a complete
+roster. A Blockbench `Panel` measures **0x0 in a window with no project** (measured both ways in one
+call: 544x93 with one open, 0x0 without, the start screen covering the workspace), and the dock is
+designed never to have a project. Its entire interface was unreachable in the only state it is ever
+in. What a person reads and presses now lives on the START SCREEN, in every bridge window: which
+window this is, who holds it, what they last did, and buttons - and the dock's is the control screen
+for all of them, one row per window with Focus / Adopt / Release / Close and one button that closes
+every empty agent window at once. `docs/models/BLOCKBENCH_ISOLATION_DESIGN.md` section 12.
+
+**A ceiling on agent windows, in the plugin, because that is the only place it can be.** 0.145.0
+stopped the shim demanding a window per idle session; on this machine that fix had reached nothing,
+because the demanding shim is a copy pinned in a consumer repo (ArmorPieces pins 0.140.0) and a
+session that started days ago keeps the copy it started with. `POST /window` now rejoins, then reuses
+an empty agent window, then refuses past `max_agent_windows` (3, in Settings) - and it counts the
+windows that have been ASKED for but do not exist yet, which is what the live run needed: six got
+past a ceiling of three when several stale shims asked in the same second.
+
+**Count the ASKS, not the windows** - the live run's one lesson, learned three times. A window that
+has been asked for does not exist for a second or two, so six got past a ceiling of three when
+several stale shims asked in the same second; then one session held three, because each of its polls
+landed in the gap where the newborn had consumed its handoff and was not yet answering; then a plugin
+RELOAD ate the handoff meant for a newborn, so the window that did appear registered as the person's
+and stopped being counted at all. Three records answer it: the handoff (consumed at birth), the ASK
+(its own expiry, one per session, shared between windows), and `sessionStorage` - per window, and it
+survives a reload, which is what tells a reload from a birth.
+
+**An idle claim stops protecting an empty window.** Those windows were all `connected: true`, held by
+terminals idle since the 9th, so nothing could ever close them: the only question a claim was asked
+was whether its socket was open, which says a process exists and not that anybody is working. A claim
+now has its own clock - the last CALL by its holder in this window - and past fifteen minutes an idle
+one is released, so the window is handed on and then closes itself. A window with a project open is
+never judged by its claim.
+
+**One Tools entry instead of seven**, carrying this window's port, with Start/Stop as one entry that
+says which is true, and the two dock entries merged. The Settings dialog fits on screen now (its
+labels were sentences) and holds the two new numbers.
+
+**A window with nothing open can be driven.** `risky_eval` and `trigger_action` need a project only
+when there is one, so the window that governs all the others is no longer unobservable to an agent
+for the same reason it was invisible to a person.
+
+**And Chromium freezes the timers of the window this design leaves in the background.** Every bridge
+window reports `visibilityState: "hidden"`; past five minutes hidden a 500ms interval ticked **0
+times in 8 seconds** in the dock. So the 20-second staleness threshold called every background window
+"wedged" (it is 90 seconds now, above Chromium's one-a-minute floor), and the roster is true by
+FILTERING plus the pruning an incoming beat does - never by the dock's own clock. A beat is an HTTP
+request, and nothing throttles those.
+
+**And the dist manifest inside the jar now says which shim it is.** It had been frozen at `0.13.0`
+since the shim actually was 0.13.0, sixty-one versions ago - the same defect as everything above, one
+layer down: a consumer runs an EXTRACTED COPY, and what that copy says about itself is the only way
+anyone tells which code they have. `processResources` derives it from the shim's own `package.json`
+rather than anyone remembering to type it.
+
+Plugin 0.10.0 / shim 0.74.0. 320 plugin-green (46 new), 18 in `blockbench-surface` (2 new), nine
+falsifiers run against the old code. Driven live at the end: eleven windows down to two, from the
+dock's own start screen, one press per row.
+
 ## 0.146.0
 
 **THE GAME SPEAKS MCP NOW, ON A DOOR OF ITS OWN.** `POST http://127.0.0.1:<bridge port>/mcp` is an
@@ -1961,7 +2735,7 @@ from a hardcoded one. An interpreted number needs a case where the boring answer
 be wrong. Then the whole path end to end: the real shim, spawned over stdio, frozen on
 25777, refused and printed the workspace's actual state (ArmorPieces, rocketeer-kami-int
 and mcp-toolkit all take 25599 by declaring nothing); frozen on 25599 it spawned
-`rebuild.ps1 -Project C:\\Users\\Matthijs\\mcmodding\\mcp-toolkit`.
+`rebuild.ps1 -Project <checkout>\\mcp-toolkit`.
 Arbiter: probes/launch-project.test.mjs, 15 cases, chunk b, and the only chunk-b member
 green with no game running - it builds synthetic Gradle roots in a temp dir for the rules
 and reads this workspace's real ones for the regression. Two mutants (pick-the-first, and

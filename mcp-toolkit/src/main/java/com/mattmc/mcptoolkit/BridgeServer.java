@@ -66,6 +66,18 @@ public final class BridgeServer {
     private static volatile boolean mcpEnabled;
     /** What {@code init()} asked for, kept apart from what was got, so a failure can name both. */
     private static volatile int requestedPort = -1;
+    /**
+     * Set by {@link #stop()} and never cleared: this process is going away and must bind nothing.
+     *
+     * <p>Without it the bind retry outlives the shutdown it should have been cancelled by, and the
+     * window is 90 seconds wide with the NORMAL reaction as its trigger — the retry warns that
+     * another process holds the port, the person quits the game because of that warning, and
+     * {@code stop()} runs against {@code http == null} with nothing to close. A retry that succeeds
+     * afterwards binds a server nothing will ever stop, which is the zombie {@link #stop()}'s own
+     * javadoc describes: a JVM that never exits, holding the port and the jar's file lock, and the
+     * victim is the NEXT game rather than this one.
+     */
+    private static volatile boolean stopped;
 
     private static final ToolContext CONTEXT = new ToolContext() {
         @Override public @Nullable MinecraftServer server() { return server; }
@@ -146,6 +158,18 @@ public final class BridgeServer {
                 t.start();
             });
         }
+        // ONCE, here, rather than per successful bind. It is idempotent, it must exist whether or
+        // not the first bind won, and registering it after the bind meant a retry that landed DURING
+        // the shutdown sequence threw IllegalStateException from addShutdownHook — a type neither
+        // catch below names — after `http` was already assigned, leaving a live server with no hook,
+        // no log line and nothing left that could close it.
+        try {
+            Runtime.getRuntime().addShutdownHook(new Thread(BridgeServer::stop, "mcptoolkit-shutdown"));
+        } catch (IllegalStateException e) {
+            // Shutdown already in progress at mod init is not a real case; say so rather than die.
+            McpToolkit.LOGGER.warn("[MCP Toolkit] JVM is already shutting down; no bridge");
+            return;
+        }
         start(port);
     }
 
@@ -195,6 +219,10 @@ public final class BridgeServer {
     }
 
     private static void start(final int port, final int attemptsLeft) {
+        if (stopped) {
+            // A retry that woke up after the game quit. Binding here is how a zombie is made.
+            return;
+        }
         try {
             HttpServer h = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
             h.createContext("/cmd", BridgeServer::handleCmd);
@@ -222,7 +250,13 @@ public final class BridgeServer {
             h.start();
             http = h;
             boundPort = port;   // only now is it true
-            Runtime.getRuntime().addShutdownHook(new Thread(BridgeServer::stop, "mcptoolkit-shutdown"));
+            if (stopped) {
+                // Lost the race by a hair: stop() ran between the check above and here, so it saw
+                // no server and closed nothing. Close it ourselves — this is the last moment anyone
+                // can, and the alternative is the non-daemon dispatcher pinning the JVM.
+                stop();
+                return;
+            }
             McpToolkit.LOGGER.info("[MCP Toolkit] bridge listening on http://127.0.0.1:{} (/cmd, /tools)", port);
             if (mcpEnabled) {
                 // Said as the URL a person pastes into their client, because that is the whole
@@ -256,6 +290,9 @@ public final class BridgeServer {
                         Thread.sleep(BIND_RETRY_MS);
                     } catch (InterruptedException ignored) {
                         return;
+                    }
+                    if (stopped) {
+                        return;   // the game quit while this thread slept; start() rechecks too
                     }
                     start(port, attemptsLeft - 1);
                 }, "mcptoolkit-bind-retry");
@@ -292,6 +329,10 @@ public final class BridgeServer {
      * Idempotent, so a double call (quit while stopping) is harmless.
      */
     public static void stop() {
+        // FIRST, and before the null check: the thing that must not survive this call is not only a
+        // live server but a bind retry still in flight, and that retry is cancelled by this flag
+        // alone (nothing else holds its thread). See the field.
+        stopped = true;
         if (http != null) {
             http.stop(0);
             http = null;
@@ -301,6 +342,9 @@ public final class BridgeServer {
     // ---- HTTP handlers -------------------------------------------------------
 
     private static void handleTools(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"use GET\"}");
             return;
@@ -312,6 +356,9 @@ public final class BridgeServer {
      *  volatile snapshot {@code ActivitySnapshot} rebuilds each server tick — lock-free, no
      *  game-thread hop, safe at any poll rate. */
     private static void handleActivity(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"use GET\"}");
             return;
@@ -323,6 +370,9 @@ public final class BridgeServer {
      *  volatile pre-serialized snapshot — goal-token content only, never waypoints. Pull, not push:
      *  the client tailer re-fetches state, so a restart mid-task re-presents the live task. */
     private static void handleHumanTask(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"use GET\"}");
             return;
@@ -337,6 +387,9 @@ public final class BridgeServer {
      * dedicated one alike.
      */
     private static void handleReview(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         if (!"GET".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"use GET\"}");
             return;
@@ -345,6 +398,13 @@ public final class BridgeServer {
     }
 
     private static void handleCmd(final HttpExchange ex) throws IOException {
+        // Before ANYTHING else, including the session touch: a caller a browser is speaking for is
+        // not a caller, and the touch would otherwise let a page on the internet keep somebody's
+        // session alive. See BridgeOrigin for why this one declaration is checked and the rest are
+        // taken on trust.
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         // Session identity: the shim stamps every call with its id (env-inherited or /hello-minted).
         // Absent header = anonymous legacy caller; everything still works, just unattributed.
         String session = ex.getRequestHeaders().getFirst("X-MCPTK-Session");
@@ -404,10 +464,28 @@ public final class BridgeServer {
      */
     public static JsonObject execute(final String toolName, final JsonObject args,
                                      final @Nullable String session, final @Nullable String profile) {
+        return execute(toolName, args, session, profile, null);
+    }
+
+    /**
+     * {@link #execute(String, JsonObject, String, String)} with the caller's player-legality stated
+     * rather than guessed from its {@code profile}.
+     *
+     * <p>The shim passes null and keeps the old derivation ({@code ToolContext.legal()}'s default:
+     * its profile IS its role, and the one called {@code survival} is the player-legal one). The MCP
+     * door passes its surface's declared flag, because on that door the same parameter carries a URL
+     * path segment an operator chose, and a surface that happened to be called {@code survival} used
+     * to acquire the whole research profile's knowledge masking by coincidence.
+     *
+     * @param legal true/false to STATE the caller's legality, null to derive it from {@code profile}
+     */
+    public static JsonObject execute(final String toolName, final JsonObject args,
+                                     final @Nullable String session, final @Nullable String profile,
+                                     final @Nullable Boolean legal) {
         JsonObject out = new JsonObject();
         ToolDef def = null;
         Sessions.touch(session);
-        ToolContext ctx = requestContext(session, profile);
+        ToolContext ctx = requestContext(session, profile, legal);
         try {
             String tool = toolName;
 
@@ -546,6 +624,9 @@ public final class BridgeServer {
      * at the only moment the toolkit gets to speak first.
      */
     private static void handleHello(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         if (!"POST".equalsIgnoreCase(ex.getRequestMethod())) {
             respond(ex, 405, "{\"error\":\"use POST\"}");
             return;
@@ -604,6 +685,9 @@ public final class BridgeServer {
      * what lets session death be detected fast (session-bound drones are reaped on it).
      */
     private static void handleHeartbeat(final HttpExchange ex) throws IOException {
+        if (BridgeOrigin.refused(ex)) {
+            return;
+        }
         String session = ex.getRequestHeaders().getFirst("X-MCPTK-Session");
         Sessions.touch(session != null && !session.isBlank() ? session : null);
         respond(ex, 200, "{\"ok\":true}");
@@ -611,8 +695,9 @@ public final class BridgeServer {
 
     /** A per-request view of the tool environment: the shared server refs plus the caller's identity. */
     private static ToolContext requestContext(final @Nullable String session,
-                                              final @Nullable String profile) {
-        if (session == null && profile == null) {
+                                              final @Nullable String profile,
+                                              final @Nullable Boolean legal) {
+        if (session == null && profile == null && legal == null) {
             return CONTEXT;
         }
         return new ToolContext() {
@@ -620,6 +705,11 @@ public final class BridgeServer {
             @Override public MinecraftServer serverOrThrow() { return CONTEXT.serverOrThrow(); }
             @Override public @Nullable String sessionId() { return session; }
             @Override public @Nullable String profile() { return profile; }
+            // Stated beats derived; null means the caller had nothing to state and the default
+            // (profile name) stands. See the five-argument execute().
+            @Override public boolean legal() {
+                return legal != null ? legal : ToolContext.super.legal();
+            }
         };
     }
 
@@ -632,7 +722,11 @@ public final class BridgeServer {
         if (result == null || (result.isJsonObject() && result.getAsJsonObject().has("_image"))) {
             return;
         }
-        int size = GSON.toJson(result).length();
+        // BYTES, which is what the message, the constant and the budget all say — and what respond()
+        // counts two methods down. String.length() is UTF-16 code units, so every result carrying a
+        // translated block name or a line of chat under-reported against the budget, and the tripwire
+        // tripped late on exactly the results it exists to catch.
+        int size = GSON.toJson(result).getBytes(StandardCharsets.UTF_8).length;
         if (size > RESULT_SIZE_WARN_BYTES) {
             McpToolkit.LOGGER.warn("[MCP Toolkit] {} returned {} bytes (budget {}) — oversized results "
                 + "bloat the agent's context and can invalidate its prompt cache; add/tighten summarization",

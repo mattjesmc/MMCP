@@ -1,6 +1,7 @@
 package com.mattmc.mcptoolkit.mcp;
 
 import com.mattmc.mcptoolkit.Mechanism;
+import com.mattmc.mcptoolkit.Sessions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
@@ -26,7 +27,7 @@ class McpConnTest {
 
     private static final McpSurface FULL = McpSurface.all("full", "everything");
     private static final McpSurface OBSERVE = new McpSurface("observe", "reads",
-        null, Set.of(), Set.of(Mechanism.OBSERVE), null);
+        null, Set.of(), Set.of(Mechanism.OBSERVE), null, false);
 
     // Every case ages its OWN connection into the past and reaps at the real now, rather than
     // reaping at a future now: the table is static and shared with every other test in this JVM, and
@@ -95,6 +96,34 @@ class McpConnTest {
         assertNull(McpConn.get(a.id));
         assertSame(b, McpConn.get(b.id));
         McpConn.close(b.id);
+    }
+
+    @Test
+    void reapingAConnectionEndsTheToolkitSessionItWasActingAs() {
+        // The reap's whole stated job — "a client that exits without a DELETE otherwise leaves a
+        // session the reapers still believe in" — and for one release it did not do it: it dropped
+        // the connection and left the Sessions entry, and the thing actually ending those sessions
+        // was the three-minute staleness window this reap has nothing to do with. With the
+        // per-request touch in McpEndpoint.post that window no longer fires under a live client at
+        // all, so this IS the mechanism now and not merely the documented one.
+        long now = System.currentTimeMillis();
+        Sessions.touch("x-reaped");
+        assertNotNull(Sessions.get("x-reaped"));
+        McpConn conn = McpConn.open(FULL, "x-reaped");
+        conn.touch(now - McpConn.IDLE_MS - 1);
+        McpConn.reap(now);
+        assertNull(McpConn.get(conn.id));
+        assertNull(Sessions.get("x-reaped"), "the connection went and took its identity with it");
+    }
+
+    @Test
+    void reapingAnAnonymousConnectionEndsNothingElse() {
+        // It has no toolkit session to end, and abort(null) is not a thing that should be reached.
+        long now = System.currentTimeMillis();
+        McpConn conn = McpConn.open(FULL, null);
+        conn.touch(now - McpConn.IDLE_MS - 1);
+        McpConn.reap(now);
+        assertNull(McpConn.get(conn.id));
     }
 
     @Test

@@ -7,11 +7,17 @@
 // Also exposes the same push headlessly as `mcptoolkitPush(opts)` so an MCP agent (risky_eval)
 // can sync without shipping asset bytes through its transcript:
 //
-//   mcptoolkitPush({project: PROJECT, bridge: GAME, namespace:'villagejobs', folder:'textures/block'})
+//   mcptoolkitPush({project: PROJECT, bridge: GAME, namespace:'mymod', folder:'textures/block'})
 //
 // `PROJECT` and `GAME` are what `risky_eval` puts in scope (mcptoolkit_bridge.js). Pass BOTH: a
 // project object cannot resolve to somebody else's tab, and a bridge URL cannot resolve to somebody
 // else's game. Neither has a default here, and that is the point — see the two paragraphs below.
+// AND AN EXPLICIT NULL IS REFUSED, NOT FALLEN THROUGH (BLOCKBENCH_ISOLATION_DESIGN.md section 13):
+// `GAME` is null when the shim never told this window which game the session drives, and
+// `PROJECT` is null when no project is open, and an agent passes them dutifully. Until 0.5.0
+// `{bridge: null}` fell through to the stored URL and `{project: null}` to the active tab - the
+// two resolutions the refuse-on-null rule of 0.140.0 existed to prevent - because the rule held
+// for an ABSENT key only. An absent key still means "use the store / the active tab".
 //
 // Options (all optional except as noted):
 //   bridge      the game bridge, e.g. 'http://127.0.0.1:25640' (a trailing /cmd is fine). REQUIRED
@@ -28,7 +34,11 @@
 //               A project NAME is refused: resolving a name reaches a project without passing the
 //               bridge's ownership check (`held_by`), which is the one route the session binding
 //               cannot protect. Omitted, the active project is used and named in the summary.
-//   namespace   asset namespace                       (default 'villagejobs')
+//   namespace   asset namespace (the mod id under assets/). REQUIRED, like `bridge`, and for the
+//               same reason: the literal 'villagejobs' this file shipped with was one mod's name,
+//               so every other mod's push landed under it silently. Set once instead of passing:
+//               mcptoolkitPushSettings({namespace: 'mymod'}) or per project
+//               mcptoolkitPushSettings({namespaces: {'my_model': 'mymod'}}); the dialog remembers.
 //   folder      texture folder under assets/<ns>/     (default 'textures/block')
 //   only        array of texture names to push, '.png' optional (default: all textures)
 //   model       also push the compiled model JSON     (default false)
@@ -58,11 +68,11 @@
 
     var STORE_KEY = 'mcptoolkit_sync.settings';
     var DEFAULTS = {
-        namespace: 'villagejobs',
         folder: 'textures/block',
         modelPath: 'models/block',
         target: 'live'
     };
+    var TARGETS = ['live', 'source', 'both'];
     // Where `target:'source'` writes, per Blockbench project and with a global fallback. Stored
     // rather than hardcoded (ENTITY_AUTHORING_DESIGN.md §6.3): the literal that used to live here
     // was one machine's checkout, and `writeToSource` will create an assets/ tree wherever it is
@@ -70,7 +80,8 @@
     // ...and `bridge`/`bridges` are the same idea one dimension over (TODO.md 1.9): which GAME.
     // Deliberately EMPTY, for exactly the reason above - the hardcoded 25599 that used to sit here
     // was a plausible default that sent a consumer repo's assets into the toolkit's own dev game.
-    var stored = { sourceRoot: '', sourceRoots: {}, bridge: '', bridges: {} };
+    var stored = { sourceRoot: '', sourceRoots: {}, bridge: '', bridges: {}, namespace: '', namespaces: {} };
+    var MAPS = ['sourceRoots', 'bridges', 'namespaces'];
     var action;
 
     function loadStored() {
@@ -78,14 +89,22 @@
             var raw = localStorage.getItem(STORE_KEY);
             if (raw) Object.assign(stored, JSON.parse(raw));
         } catch (e) { /* cleared storage, or a context that throws — empty is a safe answer */ }
-        if (!stored.sourceRoots || typeof stored.sourceRoots !== 'object') stored.sourceRoots = {};
-        if (!stored.bridges || typeof stored.bridges !== 'object') stored.bridges = {};
+        MAPS.forEach(function (k) { if (!stored[k] || typeof stored[k] !== 'object') stored[k] = {}; });
         return stored;
     }
 
+    /**
+     * A patch MERGES the per-project maps rather than replacing them (section 13): a headless
+     * `mcptoolkitPushSettings({bridges: {spider: ...}})` used to drop every other project's entry,
+     * where the dialog had always merged. One rule for both callers.
+     */
     function saveStored(patch) {
         loadStored();
-        Object.assign(stored, patch || {});
+        patch = patch || {};
+        Object.keys(patch).forEach(function (k) {
+            if (MAPS.indexOf(k) >= 0 && patch[k] && typeof patch[k] === 'object') stored[k] = Object.assign({}, stored[k], patch[k]);
+            else stored[k] = patch[k];
+        });
         try {
             localStorage.setItem(STORE_KEY, JSON.stringify(stored));
         } catch (e) { /* losing a setting is not worth failing a push over */ }
@@ -114,7 +133,14 @@
      */
     function projectOf(opts) {
         var p = opts.project;
-        if (p === undefined || p === null) {
+        if (p === null) {
+            // PROJECT is null inside risky_eval when no project is open in the window. Falling
+            // through to the active tab here would be resolving a project the caller was told
+            // does not exist (section 13).
+            throw new Error('project is null: PROJECT is null because no project is open in this window'
+                + ' — open one first (project op:new / op:open) and pass PROJECT; omit the key only to mean the active tab');
+        }
+        if (p === undefined) {
             if (typeof Project === 'undefined' || !Project) throw new Error('no project is open');
             return Project;
         }
@@ -144,6 +170,14 @@
      */
     function bridgeFor(opts, projectName) {
         loadStored();
+        if (opts.bridge === null) {
+            // GAME is null when the shim never told this window which game the session drives (a
+            // plugin driven by hand, or a session block without `game`). The stored URL is not an
+            // answer to that: it is whichever game somebody typed in last (section 13).
+            throw new Error('bridge is null: GAME is null because this session never told Blockbench which game it drives'
+                + ' — pass the game bridge URL (`ping` says it: http://127.0.0.1:<port>), or set it once:'
+                + ' mcptoolkitPushSettings({bridges: {"' + (projectName || '<project>') + '": "http://127.0.0.1:25640"}}) and omit the key');
+        }
         var url = opts.bridge
             || (projectName && stored.bridges[projectName])
             || stored.bridge;
@@ -250,7 +284,20 @@
     function doPush(opts) {
         try {
             opts = Object.assign({}, DEFAULTS, opts || {});
+            // `target` has three values, and an unknown one used to push NOTHING and answer
+            // `ok:true, pushed:N` (section 13): 'game' was neither live nor source.
+            if (TARGETS.indexOf(opts.target) < 0) {
+                throw new Error('target must be one of ' + TARGETS.join(' | ') + ', not ' + JSON.stringify(opts.target));
+            }
             var project = ensureSelected(projectOf(opts));
+            loadStored();
+            if (!opts.namespace) opts.namespace = (project.name && stored.namespaces[project.name]) || stored.namespace || '';
+            if (!opts.namespace || typeof opts.namespace !== 'string') {
+                throw new Error('no namespace for ' + (project.name ? 'project "' + project.name + '"' : 'this push')
+                    + ' — pass the mod id whose assets/<namespace>/ these are, or set it once:'
+                    + ' mcptoolkitPushSettings({namespaces: {"' + (project.name || '<project>') + '": "mymod"}}).'
+                    + ' There is deliberately no default: the one this plugin shipped with was one mod\'s name');
+            }
             var live = opts.target === 'live' || opts.target === 'both';
             // Resolved BEFORE a byte moves, both of them: a push that has nowhere to go must fail
             // before it has written half a model into a live pack or a source tree.
@@ -305,16 +352,18 @@
                 // this project keeps - the menu path has no `GAME` to be handed.
                 bridge: { label: 'Game bridge', type: 'text',
                     value: (here && stored.bridges[here.name]) || stored.bridge || '' },
-                namespace: { label: 'Namespace', type: 'text', value: DEFAULTS.namespace },
+                namespace: { label: 'Namespace', type: 'text',
+                    value: (here && stored.namespaces[here.name]) || stored.namespace || '' },
                 folder: { label: 'Texture folder', type: 'text', value: DEFAULTS.folder },
                 model: { label: 'Also push model JSON', type: 'checkbox', value: false },
                 modelPath: { label: 'Model folder', type: 'text', value: DEFAULTS.modelPath }
             },
             onConfirm: function (form) {
-                if (form.bridge && here && here.name) {
-                    var bridges = {};
-                    bridges[here.name] = form.bridge;
-                    saveStored({ bridges: Object.assign({}, stored.bridges, bridges) });
+                if (here && here.name && (form.bridge || form.namespace)) {
+                    var patch = {};
+                    if (form.bridge) { patch.bridges = {}; patch.bridges[here.name] = form.bridge; }
+                    if (form.namespace) { patch.namespaces = {}; patch.namespaces[here.name] = form.namespace; }
+                    saveStored(patch);
                 }
                 // The human clicked in THIS window, so the active project is the one they mean -
                 // and it is passed as an object, so nothing downstream resolves a name.
@@ -334,7 +383,7 @@
         author: 'mattmc',
         description: 'Push the current project textures (and optionally model JSON) into a running mcp-toolkit dev client with instant resource reload. Headless API: mcptoolkitPush(opts).',
         icon: 'sync',
-        version: '0.4.0',
+        version: '0.5.0',
         variant: 'desktop',
         onload: function () {
             globalThis.mcptoolkitPush = doPush;

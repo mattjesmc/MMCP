@@ -322,6 +322,9 @@ public final class DeclaredWidgets {
             return state;
         }
 
+        /** The id a created subject wears; negative, so no entity the server ever sends can share it. */
+        private static final int SUBJECT_ENTITY_ID = -1;
+
         /**
          * The entity behind an entity-type subject: created once against the client level and never
          * added to it, so it ticks nothing and nobody can see it but this rectangle.
@@ -334,6 +337,13 @@ public final class DeclaredWidgets {
             Identifier rl = Identifier.tryParse(subject);
             EntityType<?> type = rl == null ? null : BuiltInRegistries.ENTITY_TYPE.getOptional(rl).orElse(null);
             created = type == null ? null : type.create(mc.level, EntitySpawnReason.LOAD);
+            if (created != null) {
+                // 26.2 hands ids out only when a ServerLevel adds the entity, and getId() THROWS on
+                // an unassigned one; a living renderer asks for it (ItemModelResolver.updateForLiving
+                // seeds the head item's model with it) on the first frame. A subject that is never
+                // added needs an id nothing real can carry: the server counts up from 1.
+                created.setId(SUBJECT_ENTITY_ID);
+            }
             return created;
         }
 

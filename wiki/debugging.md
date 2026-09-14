@@ -35,6 +35,7 @@ readable from a session with no file tail.
 | `error` events in `get_events` | ERROR and FATAL also arrive as events, so a session watching the stream hears about a broken pack without polling. |
 | `get_log {crash: "latest" \| n \| file}` | The previous game's crash report. |
 | `ping.last_crash` | Present when a report is newer than the previous boot. |
+| `edit` events in `get_events` | One row per file the daemon landed, with a verdict — so "did my save reach this game, and what did it do with it" is a question the event stream answers. `node mcp-server/daemon.mjs changes --follow` is the same rows outside a session. |
 
 WARN and above live in a ring that INFO chatter **cannot evict**, so a warning stays findable long
 after the INFO around it has rolled away. `since` is a strictly-after cursor, and a cursor the ring
@@ -237,8 +238,9 @@ that failure is silent, because the game never scans it.
 >
 > So this is fixable without a restart: it is a method body.
 
-> **Agent** fixes the guard, runs `gradlew compileJava`, calls `hotswap_class`, then places another
-> lantern and reads `get_log {logger: "mymod", level: "all"}` to confirm the tick is running clean.
+> **Agent** fixes the guard, calls `hotswap_class {class: "...", compile: true}` — one call, the
+> compile runs inside it — then places another lantern and reads
+> `get_log {logger: "mymod", level: "all"}` to confirm the tick is running clean.
 
 The chain: **`ping` volunteered the crash**, the report **attributed the frame to a mod** rather than
 leaving you to read a stack trace, and `query_class` **decided the fix route before attempting it**.

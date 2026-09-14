@@ -14,6 +14,7 @@ This page gets you to a working `ping`. What to *do* once you are there is
 - [Path 1: a new mod](#path-1-a-new-mod)
 - [Path 2: a mod you already have](#path-2-a-mod-you-already-have)
 - [Path 3: the toolkit itself](#path-3-the-toolkit-itself)
+- [Optional: one daemon for every project](#optional-one-daemon-for-every-project)
 - [Your first ping](#your-first-ping)
 - [Walkthrough: a block, from nothing to standing in front of it](#walkthrough-a-block-from-nothing-to-standing-in-front-of-it)
 - [An agent session](#an-agent-session)
@@ -117,6 +118,49 @@ cd mcp-toolkit && ./gradlew runClient      # its own dev client, bridge 25599
 `mcp-server/` is the MCP server every repository in the workbench registers by absolute path. After a
 structural Java change run `tools/rebuild.ps1`. **Never run `gradlew build` or `:jar` while the game
 is running** — the game holds the jar open, and the failure is confusing rather than obvious.
+
+## Optional: one daemon for every project
+
+Everything above registers a **command** with your agent client: a `node .../index.mjs` line, plus
+the environment that tells it which port to dial. That works, and it is what release 2 documents.
+It also means every project carries its own registration, and every client session starts a process.
+
+There is a second way, and on a machine with more than one mod on it, it is the better one.
+`mmcpd` is one long-lived process that hosts all of them:
+
+```
+node <toolkit checkout>/mcp-server/daemon.mjs add C:/dev/yourmod   # once; it reads mcmod.port
+node <toolkit checkout>/mcp-server/daemon.mjs serve                # leave it running
+```
+
+Then the registration is a **URL**, and your client spawns nothing:
+
+```
+claude mcp add --transport http mmcp http://127.0.0.1:25500/mcp/yourmod
+claude mcp add --transport http art  http://127.0.0.1:25500/mcp/yourmod?profile=art
+```
+
+The `?profile=` on the end picks the tool surface, so a second registration is how you keep an art
+session and a modding session with different tool lists without switching anything mid-session.
+See [Tool profiles and cost](tool-profiles-and-cost.md).
+
+Three things you get for free once it is running, and one thing to know.
+
+- **A page.** `http://127.0.0.1:25500/ui/` is the cockpit: every registered project with its state
+  and its URL, a **Rebuild & launch** and a **Stop** button per project with the cycle's output
+  tailed as it runs, the game's `latest.log`, the sessions attached and what they last called, and
+  the change feed live. It is the same daemon routes with buttons on them — an agent can do
+  everything the page does — and it is the quickest way to see what is attached to what.
+- **`node daemon.mjs projects`** tells you the same from a terminal: which registered game is up
+  and which is down, across every project on the machine.
+- **The daemon watches your source tree**, and a file you save is in the running game seconds
+  later with nothing called. That is the biggest single change to the daily loop and it has its
+  own section: [The change loop](the-change-loop.md#the-shortest-route-write-the-file).
+- **It is one process you have to remember to start.** Nothing starts it for you yet, and if it is
+  not running, the URL registration answers nothing. `daemon.mjs status` says whether it is up.
+
+The stdio registration keeps working and is unchanged; if you are on one mod and one machine, there
+is nothing wrong with staying on it.
 
 ## Your first ping
 
@@ -268,6 +312,13 @@ It gets extracted to your project (or your game directory) and your agent client
 why `npm install --omit=dev` is a step, and why the server can answer honestly — with local tools
 only — while the game is down. See [How it works](how-it-works.md).
 
+### The daemon is not started for you
+
+If you registered a `http://127.0.0.1:25500/...` URL and your client reports no tools, the usual
+cause is that `mmcpd` is not running — it is an ordinary process and nothing supervises it yet.
+`node mcp-server/daemon.mjs status` answers in one line. The same applies to the file watcher: a
+save that does not reach the game reaches nothing because there is no daemon to see it.
+
 ### A production install is a different mode
 
 Everything above is *dev*. Attaching to a normal launcher game is supported and works differently
@@ -289,3 +340,5 @@ enough to have its own page: [Servers and production](servers-and-production.md)
 - `template-mod/README.md` — the five steps, from the template's own point of view.
 - `EXTENDING.md` § *Quickstart* — applying the convention plugin to an existing build.
 - `LIVE_MODDING.md` § *Before a game exists* — `scaffold` and `checkAssets` in detail.
+- `mcp-server/README.md` § *Register with Claude Code* — both registrations, and the daemon's CLI.
+- `HOST_DESIGN.md` § 15 — what the daemon owns and why it exists at all.

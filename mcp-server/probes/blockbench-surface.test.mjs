@@ -328,6 +328,66 @@ test("with every window taken the shim asks for another, and claims the port tha
   assert.strictEqual(a.calls.length, 0, "never in the one it was refused");
 });
 
+// THE PLUGIN ANSWERS `POST /window` WITH A DECISION (plugin 0.10.0, isolation record section 12.4).
+// The route that a shim from before toolkit 0.145.0 calls on a poll forever is the one place a
+// ceiling can be enforced for those sessions, so it now reuses an empty agent window before making
+// one and refuses past a limit. Both answers name a port or say why there is none, which is what
+// lets this side skip the scan-and-race that `askForWindow` otherwise has to do.
+test("a plugin that REUSES a window answers with its port, and the shim goes straight there", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  // B is the window this whole route exists for: an empty agent window whose holder has gone quiet.
+  // A SCANNING SHIM CANNOT TAKE IT - `takeable` needs no claim at all - and the plugin can, because
+  // it knows an idle claim is not a reason to keep a window (section 12.3). So the shim asks, and
+  // the answer is a window that was already there.
+  const ws = await windows([
+    {
+      window: "win-a",
+      claimedBy: { session: "someone-else", client: "their-shim" },
+      onCall: () => ({ landed: "a" }),
+      onOpenWindow: (sess) => {
+        ws.list[1].preClaim({ session: sess.id, client: sess.client });
+        return { ok: true, reused: true, port: ws.base + 1, window: "win-b", claim_for: sess.id, autostart: true };
+      },
+    },
+    { window: "win-b", claimedBy: { session: "gone-quiet", idle: true }, onCall: () => ({ landed: "b" }) },
+  ]);
+  const a = ws.list[0];
+  const b = ws.list[1];
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-reuse" } });
+  t.after(() => shim.kill());
+  await working(shim, "place_cube");
+  assert.deepStrictEqual(a.opens.map((x) => x.id), ["probe-reuse"], `it asked the window it could not have; stderr:\n${shim.stderr()}`);
+  assert.strictEqual((await held(b, "probe-reuse"))?.session, "probe-reuse", "and claimed the window that answer named: " + shim.stderr());
+  assert.match(textOf(await shim.call("get_project_info", {})), /"landed":"b"/, "and its calls land there");
+  assert.strictEqual(a.calls.length, 0, "never in the window it was refused");
+});
+
+test("a plugin at its window limit refuses, and the session says so rather than multiplying windows", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const ws = await windows([{
+    window: "win-a",
+    claimedBy: { session: "someone-else", client: "their-shim" },
+    onCall: () => ({ landed: "a" }),
+    onOpenWindow: () => ({
+      ok: false, opened: false,
+      error: "this Blockbench already has 3 agent window(s) (25801, 25802, 25803) and its limit is 3",
+      hint: "work in one of those, or raise the limit in Tools > MCP Toolkit Bridge > Settings",
+      agent_windows: [25801, 25802, 25803], max_agent_windows: 3,
+    }),
+  }]);
+  const a = ws.list[0];
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-limit" } });
+  t.after(() => shim.kill());
+  await working(shim, "place_cube");
+  assert.match(shim.stderr(), /was refused/, "the refusal is said out loud, not swallowed");
+  assert.match(shim.stderr(), /limit is 3/, "with the plugin's own sentence in it");
+  // And the fallback is unchanged: sharing an agent window, named, rather than another window.
+  assert.match(shim.stderr(), /sharing port/, "and the worse outcome it fell back to is named too");
+  assert.match(textOf(await shim.call("get_project_info", {})), /"landed":"a"/, "the call lands in the shared window");
+});
+
 // THE FLIP (BLOCKBENCH_ISOLATION_DESIGN.md section 10). A window is the person's unless it was
 // opened FOR an agent, so the window somebody is working in is never a candidate and they set no
 // flag to keep it. Before this, protecting your own window was an opt-in you found out about by
@@ -578,4 +638,192 @@ test("a call before this session's first tools/list reaches Blockbench, not the 
   assert.strictEqual(bb.tools_requests, toolsAsked, "one lazy list, not one per call");
   const game = await shim.call("get_log", {});
   assert.ok(bridge.calls.some((c) => c.tool === "get_log"), `a game tool still reaches the game: ${textOf(game)}`);
+});
+
+// A RELATIVE PATH MEANS THE WORKSPACE. Blockbench resolves a relative `path` against its own
+// install directory; the session means the directory it was started in. The shim makes it absolute
+// before the call leaves, for every tool with a `path`, and leaves an absolute one alone.
+test("a relative `path` in a Blockbench call is made absolute against the workspace before it leaves", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const bb = await startStubBlockbench({ tools: BB_TOOLS, onCall: (p) => ({ echoed: p.arguments }) });
+  const cwd = mkdtempSync(join(tmpdir(), "mcptk-ws-"));
+  const shim = await spawnShim({ cwd, env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: bb.url, MCPTK_PROFILE: "art" } });
+  t.after(async () => { shim.kill(); await bridge.close(); await bb.close(); });
+  await shim.list();
+  await shim.call("project", { op: "save", path: "models/x.bbmodel" });
+  const sent = bb.calls.at(-1)?.arguments?.path;
+  assert.strictEqual(sent, join(cwd, "models", "x.bbmodel"), `resolved against the shim's cwd; got ${sent}`);
+  const abs = join(cwd, "elsewhere", "y.bbmodel");
+  await shim.call("project", { op: "open", path: abs });
+  assert.strictEqual(bb.calls.at(-1)?.arguments?.path, abs, "an absolute path is left alone");
+  await shim.call("export_model", { codec: "java_block", path: "out/z.json" });
+  assert.strictEqual(bb.calls.at(-1)?.arguments?.path, join(cwd, "out", "z.json"), "every tool with a `path`");
+  await shim.call("list_outline", {});
+  assert.strictEqual(bb.calls.at(-1)?.arguments?.path, undefined, "a call with no path gains none");
+});
+
+// EVICTION IS SAID, NOT ENFORCED (BLOCKBENCH_ISOLATION_DESIGN.md section 13, shim 0.75.0). A claim
+// steers discovery and nothing else, so until now nothing a person did to a window - the dock's
+// Take back, the fifteen-minute recycle, Stop the bridge - reached the session in it: the shim kept
+// its cached window, kept calling into it, and `ping` answered `held: "this session"` out of that
+// cache. Two routes now carry the news, both ones the shim already had: a `window` note on a `/cmd`
+// reply, and one last line on the presence socket. The four probes below were run against shim
+// 0.74.0 first (MCPTK_PROBE_SHIM at a `git archive HEAD` of mcp-server) and each went red there.
+test("a reply that says the window is somebody else's makes the shim forget it, say so, and move", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const ws = await windows([
+    { window: "win-a", onCall: () => (ws.evict ? { ok: true, result: { landed: "a" }, window: ws.evict } : { landed: "a" }) },
+    { window: "win-b", onCall: () => ({ landed: "b" }) },
+  ]);
+  const [a, b] = ws.list;
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-evict", MCPTK_CLIENT: "shim-e" } });
+  t.after(() => shim.kill());
+  await working(shim, "place_cube");
+  assert.strictEqual((await held(a, "probe-evict"))?.session, "probe-evict", `it works in the first window; stderr:\n${shim.stderr()}`);
+  assert.ok(await presenced(a, "probe-evict"), "with presence held there");
+  let p = await shim.call("ping", {});
+  assert.match(textOf(p), /"held":"this session"/, `ping says the window is this session's: ${textOf(p)}`);
+  // The person takes the window back and it is handed to another session: the plugin's holder
+  // changes, and the next reply to this session carries the note (the shape `evictionNote` stamps).
+  a.preClaim({ session: "other", client: "their-shim" });
+  ws.evict = {
+    port: a.port, window: "win-a", held_by: { session: "other", client: "their-shim", connected: true, seen_s_ago: 0 },
+    reason: "taken back by the person at the keyboard",
+    note: `window win-a (port ${a.port}) is not this session's any more (taken back by the person at the keyboard): it is held by session other (their-shim). The next call resolves a window of its own; a project still open here is out of reach unless a person moves it.`,
+  };
+  const r = await shim.call("get_project_info", {});
+  assert.ok(!r.isError, `the call that carried the news still RAN (refusing it would be enforcing the claim): ${textOf(r)}`);
+  assert.match(textOf(r), /"landed":"a"/, "in the window it was sent to");
+  assert.match(textOf(r), /"window_lost":"window win-a \(port \d+\) is not this session's any more \(taken back by the person at the keyboard\)/, `and the agent reads the note in the reply:\n${textOf(r)}`);
+  assert.match(shim.stderr(), /blockbench: window win-a \(port \d+\) is not this session's any more/, `stderr names it too:\n${shim.stderr()}`);
+  for (let i = 0; i < 30 && a.presence.some((x) => x.session === "probe-evict" && !x.closed); i++) await new Promise((res) => setTimeout(res, 50));
+  assert.ok(!a.presence.some((x) => x.session === "probe-evict" && !x.closed), "presence in the lost window was closed by the shim");
+  // Between calls, `ping` is no longer read off the cache.
+  p = await shim.call("ping", {});
+  assert.match(textOf(p), /"held":"none"/, `ping says the session holds nothing now: ${textOf(p)}`);
+  assert.match(textOf(p), /"lost":\{"port":\d+,"window":"win-a","reason":"taken back by the person at the keyboard","note":"window win-a/, `and carries the loss:\n${textOf(p)}`);
+  // The next call resolves afresh and lands in the other window.
+  ws.evict = null;
+  const r2 = await shim.call("get_project_info", {});
+  assert.match(textOf(r2), /"landed":"b"/, `the next call resolved a window of its own:\n${textOf(r2)}`);
+  assert.strictEqual((await held(b, "probe-evict"))?.session, "probe-evict", "and claimed it");
+  assert.ok(await presenced(b, "probe-evict"), "with presence opened there at that same call");
+  assert.strictEqual(a.holder()?.session, "other", "leaving the lost one to whoever has it");
+  assert.doesNotMatch(textOf(r2), /window_lost/, "and the note is not repeated on a window of its own");
+  p = await shim.call("ping", {});
+  assert.match(textOf(p), /"held":"this session"/, `ping is back to a window of its own: ${textOf(p)}`);
+});
+
+test("a recycle told on the presence socket is heard between calls, and the next call moves", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const ws = await windows([
+    { window: "win-a", onCall: () => ({ landed: "a" }) },
+    { window: "win-b", onCall: () => ({ landed: "b" }) },
+  ]);
+  const [a, b] = ws.list;
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-recycle" } });
+  t.after(() => shim.kill());
+  await working(shim, "place_cube");
+  assert.strictEqual((await held(a, "probe-recycle"))?.session, "probe-recycle", `it works in the first window; stderr:\n${shim.stderr()}`);
+  assert.ok(await presenced(a, "probe-recycle"), "with presence held there");
+  // Fifteen idle minutes with nothing open: the plugin drops the claim, writes one last line on this
+  // session's presence sockets and closes them - and the dock hands the window to the next session.
+  a.evict("probe-recycle", "recycled: idle 15 min with nothing open");
+  a.preClaim({ session: "next-session", client: "their-shim" });
+  await shim.waitStderr(/blockbench: window win-a \(port \d+\) is no longer this session's \(recycled/);
+  const p = await shim.call("ping", {});
+  assert.match(textOf(p), /"held":"none"/, `ping says so before any call was made: ${textOf(p)}`);
+  assert.match(textOf(p), /"lost":\{"port":\d+,"window":"win-a","reason":"recycled: idle 15 min with nothing open"/, `with the reason:\n${textOf(p)}`);
+  assert.deepStrictEqual([a.calls.length, b.calls.length], [1, 0], "and nothing was called anywhere to learn it");
+  const r = await shim.call("get_project_info", {});
+  assert.match(textOf(r), /"landed":"b"/, `the next call lands in another window:\n${textOf(r)}`);
+  assert.strictEqual((await held(b, "probe-recycle"))?.session, "probe-recycle", "which it claimed");
+  // Presence follows the window AT THE CALL that resolved it (shim 0.75.0), not on the next poll:
+  // until then the fresh claim rested on the plugin's grace alone.
+  assert.ok(await presenced(b, "probe-recycle"), "and moved its presence into, at that call");
+  assert.strictEqual(a.holder()?.session, "next-session", "the recycled window is still the next session's");
+});
+
+test("a window closed by hand is named as gone, and the next call gets another", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const ws = await windows([
+    { window: "win-a", onCall: () => ({ landed: "a" }) },
+    { window: "win-b", onCall: () => ({ landed: "b" }) },
+  ]);
+  const [a, b] = ws.list;
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-gone" } });
+  t.after(() => shim.kill());
+  await working(shim, "place_cube");
+  assert.strictEqual((await held(a, "probe-gone"))?.session, "probe-gone", `it works in the first window; stderr:\n${shim.stderr()}`);
+  // The person closes that window. The old sentence was "Blockbench unreachable, is it open?" while
+  // Blockbench was open with another window answering; one scan tells the two apart.
+  await a.close();
+  const r = await shim.call("get_project_info", {});
+  assert.ok(r.isError, "the call into a window that is gone is an error");
+  assert.match(textOf(r), new RegExp(`window win-a \\(port ${a.port}\\) is gone - closed by hand\\? - Blockbench is still open \\(1 window\\(s\\) answer\\)`), `and it names the window and the port, not "unreachable":\n${textOf(r)}`);
+  assert.match(textOf(r), /work that was unsaved there is lost unless the person kept it/, "and says what that cost");
+  const p = await shim.call("ping", {});
+  assert.match(textOf(p), /"held":"none"/, `ping reports the loss: ${textOf(p)}`);
+  assert.match(textOf(p), /"reason":"gone"/, textOf(p));
+  const r2 = await shim.call("get_project_info", {});
+  assert.match(textOf(r2), /"landed":"b"/, `the call after that lands in the surviving window:\n${textOf(r2)}`);
+  assert.strictEqual((await held(b, "probe-gone"))?.session, "probe-gone", "and claimed it");
+});
+
+// A TIMEOUT IS DIAGNOSED OFF /hello (section 13). One queue for every session and a two-minute
+// ceiling here, so a call queued behind a long push timed out untouched and the sentence blamed a
+// dialog. The plugin now says on /hello what is running and how many wait; the shim asks once and
+// says what it found. The ceiling is read from the env so a probe need not wait two minutes.
+test("a timeout with /hello reporting a running call names it, and says the call was dropped", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  let release = null;
+  const ws = await windows([{ window: "win-a", onCall: (p) => (p.name === "get_project_info" ? new Promise((r) => { release = r; }) : {}) }]);
+  const a = ws.list[0];
+  a.queue = { running: { name: "risky_eval", session: "x", s: 130 }, waiting: 1 };
+  t.after(async () => { if (release) release({}); await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-timeout", MCPTK_BLOCKBENCH_CALL_TIMEOUT_MS: "1500" } });
+  t.after(() => shim.kill());
+  await serving(shim, "place_cube");
+  let r = await shim.call("get_project_info", {});
+  assert.ok(r.isError, "the call that never answered is an error");
+  assert.match(textOf(r), /Blockbench is running "risky_eval" from session x for 130s with 1 call\(s\) waiting; "get_project_info" was queued behind it, gave up at 1\.5s, and has been dropped \(it did not run\)/, `the sentence is the queue's truth, not a dialog:\n${textOf(r)}`);
+  assert.doesNotMatch(textOf(r), /dialog/, "no dialog is blamed while something else is running");
+  // Nothing running: the dialog sentence stays, for the one case it is true.
+  a.queue = { running: null, waiting: 0 };
+  r = await shim.call("get_project_info", {});
+  assert.ok(r.isError);
+  assert.match(textOf(r), /gave no answer within 1\.5s, and nothing is running in its queue now/, `with an empty queue the dialog is the suspect:\n${textOf(r)}`);
+  assert.match(textOf(r), /dialog of its own/, textOf(r));
+});
+
+test("an idle session re-asks the one window it read the manifest from, not the whole range", async (t) => {
+  const bridge = await startStubBridge({ manifest: MANIFEST });
+  const ws = await windows([
+    { window: "win-a", onCall: () => ({ landed: "a" }) },
+    { window: "win-b", onCall: () => ({ landed: "b" }) },
+  ]);
+  const [a, b] = ws.list;
+  t.after(async () => { await bridge.close(); await ws.close(); });
+  const shim = await spawnShim({ env: { MCPTK_URL: bridge.base, MCPTK_BLOCKBENCH: ws.range, MCPTK_PROFILE: "art", MCPTK_SESSION: "probe-peek" } });
+  t.after(() => shim.kill());
+  // `peekBase` rescanned sixteen ports on every poll of every session that held no window (the
+  // throttle covered only an EMPTY result): sixteen connects every three seconds per idle session
+  // with the game down. Now the window the manifest was last read from is re-asked alone, and the
+  // full sweep runs only when that one fails or once a minute.
+  await serving(shim, "place_cube");
+  assert.ok(a.hellos >= 1 && b.hellos >= 1, `the first list swept the range: ${a.hellos}/${b.hellos}`);
+  const [a0, b0] = [a.hellos, b.hellos];
+  for (let i = 0; i < 6; i++) { await shim.list(); await new Promise((r) => setTimeout(r, 120)); }
+  assert.ok(a.hellos - a0 >= 6, `every later list asked the remembered window: ${a.hellos - a0} hellos for 6 lists; stderr:\n${shim.stderr()}`);
+  assert.strictEqual(b.hellos, b0, `and never the other one: ${b.hellos - b0} more hellos on the second window`);
+  assert.deepStrictEqual([a.holder(), b.holder()], [null, null], "and being idle it still holds nothing");
+  // The remembered window going away is what brings the sweep back.
+  await a.close();
+  await shim.list();
+  await new Promise((r) => setTimeout(r, 200));
+  await shim.list();
+  assert.ok(b.hellos > b0, "with the remembered window gone the range is swept again and the other one is found");
 });

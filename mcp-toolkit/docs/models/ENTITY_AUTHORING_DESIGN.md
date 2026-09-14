@@ -269,6 +269,27 @@ check battery run plugin-side (it needs only the project's cubes — no game):
 `action:'verify'` returns the table; the panel shows it. A vision impression is never a finding —
 the checks are the findings, the screenshot is legibility only.
 
+**Added at plugin 0.6.0 (2026-09-13, CHANGELOG 0.149.0), from a reading of what could reach the game
+unnamed:** a headless `push` runs this battery last among its refusals and refuses with its lines
+while it has problems (`force:"<why>"` pushes anyway and is recorded on the reply; the panel button
+forces); `detached` - a pair in contact at rest that opens a gap wider than the sink tolerance at a
+sampled pose, the wrong-pivot signature and the mirror of the animated overlap arm; `fractional` - a
+cube size that is not whole, first in the UV list, with the coverage walk rounding faces out the way
+the painter fills them; and paint counted at the game's alpha cutout (`ALPHA_MIN = 26`, from
+`RenderPipelines.ALPHA_CUTOUT_THRESHOLD_DEFAULT` = 0.1 in `entity.fsh`), texels below it a `faint`
+note. The animated overlap tolerance question a correctly pivoted wide limb raises is recorded in
+that changelog entry, not settled.
+
+**Settled at plugin 0.7.0 (2026-09-13, CHANGELOG 0.151.0):** for a pair the rest table put in contact,
+the tolerance at a sampled pose is `sinkPx + reach * sin(angle)` - what a rotation about a joint on
+the contact face explains, `angle` the pair's turn relative to rest and `reach` the smaller box's
+extent along the swing direction in the contact plane. Past that is an `animated` line that says what
+the joint explained; inside it is listed in the long form and is not a finding. Chosen over an
+emergence rule because vanilla's `QuadrupedModel` swings its legs through 1.4 radians and their top
+corners cross the body plane on every stride. Same release: `near` - parallel faces sharing area,
+apart by more than `coplanarEps` and no more than `nearPx` (0.1 px), a finding ranked between
+coplanar and sunk, because the depth buffer cannot resolve the lift at distance.
+
 ### 6.3 Promotion
 
 `target:'source'` writes the interchange JSON + PNGs into the consumer mod's resources via the

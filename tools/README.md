@@ -8,6 +8,7 @@
 | `extract-vanilla-src.ps1` | Unpack Loom's decompile cache into `../vanilla-src/` so vanilla source can be grepped. Re-run after `genSources` on a new Minecraft version. |
 | `prod-client.py` | Assemble a launcher-less PRODUCTION client command from an installed launcher version, to exercise the production arm without touching the real game. |
 | `launch-supervise.mjs` | By-hand harness for `launch_game`: supervises a rebuild cycle from a process that outlives it. |
+| `cockpit-shot.mjs` | Look at the cockpit (`mmcpd`'s `/ui/`) without a human: opens a tab in headless Edge over CDP and writes a PNG. `node tools/cockpit-shot.mjs http://127.0.0.1:25500/ui/ changes out.png` (tab: projects, sessions, changes, blockbench). |
 | `probes/` | Tests of the scripts themselves (the launch guard, the rebuild lock). |
 
 Archived 2026-09-06 to `../../mcmodding-archive/tools/` (its README says how to restore each):

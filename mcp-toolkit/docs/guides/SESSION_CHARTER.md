@@ -34,7 +34,8 @@ meets it.
    bridge. It runs `tools/rebuild.ps1`, which stops the running game first. Never run
    `gradlew build` or `gradlew jar` yourself while a dev game is running: the game holds the jar.
 3. Read `LIVE_MODDING.md`'s decision table once. It maps what you changed to how it reaches the
-   game: a method body hotswaps, a structural change rebuilds, assets and data push live,
+   game: a method body hotswaps (`hotswap_class {compile: true}` compiles and swaps in ONE call),
+   a structural change rebuilds, assets and data push live,
    worldgen needs a world restart and `preview_worldgen` tells you whether it landed.
 
 ## Believing what comes back

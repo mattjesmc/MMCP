@@ -38,6 +38,12 @@ complexity; it is arithmetic.
 `MCPTK_PROFILE` picks which slice of the manifest a session sees. It is set in your `.mcp.json`
 registration, or changed live.
 
+If you register through a URL rather than a command, **the profile is part of the URL** and there is
+no environment variable to keep in step: `http://127.0.0.1:25500/mcp/<project>?profile=art` on the
+daemon, or `http://127.0.0.1:<port>/mcp/<surface>` on the game's own door. That is also the cheapest
+way to have two differently-shaped sessions on one game at once — register the URL twice under two
+names, and each client session gets the surface its URL asked for.
+
 ### The set
 
 Which group a name belongs to is the first thing to know about it.

@@ -48,7 +48,7 @@ class McpTransportTest {
             (name, args, session, surface) -> {
                 JsonObject result = new JsonObject();
                 result.addProperty("tool", name);
-                result.addProperty("surface", surface);
+                result.addProperty("surface", surface.name());
                 // The toolkit session the door minted for this connection — absent for a caller
                 // that never sent initialize, which is the whole point of the anonymous case below.
                 if (session != null) {

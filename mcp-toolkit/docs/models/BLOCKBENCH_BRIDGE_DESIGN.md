@@ -52,7 +52,7 @@ shim's adapter is a copy of something it has, not a second protocol:
 | `GET /tools` | `[{name, description, inputSchema, mechanism}]` - stamped, like the bridge's manifest |
 | `POST /cmd` `{tool, args, session:{id, client, profile}}` | `{ok:true, result, mechanism}` or `{ok:false, error}` |
 | `POST /claim` `{session, release?}` | `{ok:true, claimed, rejoined}` or `{ok:false, error}` - one session owns a window (section 15) |
-| `POST /window` `{session}` | `{ok:true, opened, autostart}` or `{ok:false, error}` - only the plugin can make a window |
+| `POST /window` `{session}` | `{ok:true, opened, autostart}`, `{ok:true, reused, port, window}` (one it rejoined or was handed) or `{ok:false, error, agent_windows, max_agent_windows}` - only the plugin can make a window, and since 0.10.0 it reuses one and keeps a ceiling before it does (isolation record 12.4) |
 
 No MCP session ids, no SSE, no initialize handshake; a Blockbench restart is a server that went
 away and came back, which the shim's tool-list watcher already handles for the game bridge. A
@@ -523,3 +523,59 @@ whichever window was unreserved, is now only ever a window somebody decided to s
 Harness 233 checks (28 new) and the shim probe 13 tests (2 new), including a plugin-from-before-the-
 flip window still being read the old way. **What no stub reaches** is unchanged and is still the live
 arm: the second REALM, and now also `window.close()` actually removing a window.
+
+## 17. Plugin 0.10.0 (2026-09-12, toolkit 0.147.0 / shim 0.74.0): the surfaces, and a claim with a clock
+
+The record for this is `BLOCKBENCH_ISOLATION_DESIGN.md` section 12; what belongs here is the four
+things it changed about THIS plugin's own shape.
+
+**A start-screen section, because a panel is 0x0 where this plugin lives.** Both panels (the status
+one and the dock's) are invisible in a window with no project - measured, 544x93 with one open
+against 0x0 without - so the plugin now also paints `addStartScreenSection`, a global in 5.1.6 that
+returns a handle with `delete()`. The model is separate from the painting (`startScreenModel()`
+returns rows and buttons as data, each button carrying a function) so the whole surface is assertable
+headlessly; every dynamic value goes in as `textContent`, because that call passes its own `text`
+through `pureMarked`.
+
+**One Tools entry.** An Action with a `children` array is a submenu, and `Action.setName` (on the
+prototype) is what lets one entry carry a state - so Start and Stop are one line that says which is
+true, and the parent says which port this window is.
+
+**Two new settings, read live.** `max_agent_windows` and `idle_claim_ms` join `port` and `autostart`
+in the same localStorage store, and only a changed base port restarts the bridge: a restart makes
+this window give up the port that is its name, which every shim holding it then has to re-find.
+`status()` reports all four under `limits`.
+
+**The project gate is per tool.** `PROJECT_OPTIONAL` (`risky_eval`, `trigger_action`) resolves a
+project only when one is open, so a window with nothing in it can still be driven; when a project IS
+open nothing changes, `held_by` guard included.
+
+Harness 320 checks (46 new) and the shim probe 18 tests (2 new). **What no stub reaches** is
+unchanged: the second realm, `window.close()` actually removing a window, and now Chromium's timer
+throttling, which is why 12.7 is a measurement and not a design note.
+
+
+## 18. The review of 2026-09-13, built the same day
+
+The review of plugin 0.10.0 and the two companion plugins, and the five-step order of work that
+answers it, are `BLOCKBENCH_ISOLATION_DESIGN.md` section 13; 13.4 there is the as-built record.
+What changed in THIS record's terms, plugin 0.11.0 / shim 0.75.0 / sync 0.5.0 / entity 0.4.0:
+
+- **The envelope.** A `/cmd` reply may carry `window: {port, window, held_by, reason, note}` beside
+  `ok`/`result`/`error` - stamped by an agent window whose holder is not the caller, the same place
+  and discipline as `result.session` (the shared-id note, section 10). The shim reads it, forgets the
+  window, and puts the note in what the agent reads (`result.window_lost`, or appended to the error).
+- **`GET /hello` and every beat** carry `queue: {running: {name, session, s} | null, waiting}`.
+  The queue drops a call whose socket closed before its turn and records it in `recent` with a note;
+  a `dropped: true` envelope is made but answered to nobody.
+- **`GET /presence`** may end with one more line than the first: `{evicted: true, session, window,
+  port, reason, note}`, written by the recycle just before the socket is closed. The shim parses
+  every line now, not only the first.
+- **Every route** answers 403 to a non-loopback `Origin`, before anything else, with one sentence
+  (`isLoopbackOrigin`, the same rule as the game's `BridgeOrigin`).
+- **`risky_eval`** puts `SESSION` in scope beside `PROJECT` and `GAME`.
+- **Settings** are read from the store on every `storage` event and written back after a reload,
+  so a window never overwrites another's change (section 5's hazard, closed for the settings).
+- **The companion plugins** refuse an explicit `null` for `bridge` and `project`, check `target`,
+  merge per-project maps in their headless settings calls, and (entity) stage under a per-session
+  tag when handed `session`.

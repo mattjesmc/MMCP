@@ -22,7 +22,7 @@ import { localTools, isLocalTool, callLocalTool } from "./local/registry.mjs";
 import {
   BLOCKBENCH_URL, fetchBlockbenchTools, isBlockbenchTool, hasBlockbenchManifest, dropBlockbenchNames,
   callBlockbench, blockbenchMechanism, setBlockbenchProfile, blockbenchWhere, blockbenchWindowNote,
-  blockbenchWindow, blockbenchSession,
+  blockbenchWindow, blockbenchSession, blockbenchLost,
 } from "./upstream/blockbench.mjs";
 // The loop kit (LOOP_KIT_DESIGN.md §5): the image budget every picture goes through, and the
 // project's loop file — post-call checks, a save gate, and a project profile with notes.
@@ -65,6 +65,7 @@ import { noteDelivered, dangerDigest } from "./memory/danger.mjs";
 // launches which port to bind, and a rule spelled out in two files is spelled out in one and stale
 // in the other.
 import { BASE } from "./bridge-base.mjs";
+import { servesBlockbenchProfile } from "./blockbench-profiles.mjs";
 
 // --- the project loop file (LOOP_KIT_DESIGN.md §5.2/§5.3) ---------------------------------------
 // Read ONCE, before the profile is chosen, because it can choose the profile: a workspace whose
@@ -513,11 +514,13 @@ const AUTHORING_KEEP = [
 //                          Blockbench is not fetched, not routed and not polled at all.
 //   screens/inspect      - nothing. A UI session drives the game's widgets, not another app's; a
 //                          read-only inspector must not hold an editor.
-const BLOCKBENCH_PROFILES = new Set(["full", "standard", "entity", "art"]);
+// The set itself lives in blockbench-profiles.mjs since 0.77.0: the daemon (daemon.mjs) must
+// answer the same question about a session it has not spawned yet, and this file cannot be imported
+// for its constants without running the shim.
 // `project` answers as its BASE here even when it has a keep-list: which upstreams exist is the
 // base's decision, which names are kept is the keep-list's. (PROJECT_BASE is declared below, after
 // the keep-lists; this is only ever called at build time, long after both exist.)
-const servesBlockbench = (profile) => BLOCKBENCH_PROFILES.has(profile === "project" ? PROJECT_BASE : profile);
+const servesBlockbench = (profile) => servesBlockbenchProfile(profile, PROJECT_BASE);
 
 // The slice `art` keeps. The plugin's surface was DESIGNED as the art slice (the third-party
 // plugin's 94 tools, of which `art` kept 20 and the pipeline used one, are what it replaced), so
@@ -642,6 +645,11 @@ const MODDING_EXCLUDED = [
   // Operator surface: tasking a human, and queueing commands that later run at the console's own
   // authority. Neither is a thing a modding session does incidentally; both are served by `full`.
   "human_task", "human_task_cancel", "review_post", "review_status",
+  // The daemon's write into the event stream (0.156.0, HOST_DESIGN.md section 4.5). mmcpd calls it
+  // over /cmd itself, never through a session, so a modder's edits reach the stream without this
+  // entry; what a modding session needs is the READ, `get_events` (kept). Announcing an edit landed
+  // by hand is `full`'s.
+  "record_edit",
   // World-model DRIVER surface (V3_PLAN.md). A research harness's tools, not a modder's.
   "wm_verdict", "wm_obsgap", "wm_session_tag", "wm_perturb",
   // Survival's own exit, served only there (local/survival.mjs).
@@ -1207,11 +1215,11 @@ function isServed(name) {
 // each REPLY as well, and finishReply prefers the reply's stamp. This is what a loop check's
 // `after.mechanism` selects on, so "read-only calls never trigger" is derived from the manifest
 // rather than hand-kept.
-const MECHANISM = new Map();
+let MECHANISM = new Map();
 // Tools whose OWN schema declares `force` — the gate passes it through to those and strips it from
 // every other, because ArgCheck refuses an argument a ToolDef never declared and Blockbench's
 // schemas are additionalProperties:false.
-const DECLARES_FORCE = new Set();
+let DECLARES_FORCE = new Set();
 const loopChecks = new LoopChecks(LOOP, {
   // An `eval` check runs inside Blockbench through the same risky_eval the art profile paints with.
   // The plugin answers JSON.stringify(value) as text, which is what the contract parses.
@@ -1448,20 +1456,31 @@ async function buildToolList() {
   // `locate` to the belief store, so the bridge's X-ray description would describe a different
   // tool than the one this profile answers with. Applied to the merged list, keyed by name.
   if (PROFILE === "survival") {
-    for (const t of all) {
-      const o = SURVIVAL_OVERRIDES[t.name];
-      if (o?.description) t.description = o.description;
-      if (o?.inputSchema) t.inputSchema = o.inputSchema;
+    for (let i = 0; i < all.length; i++) {
+      const o = SURVIVAL_OVERRIDES[all[i].name];
+      if (!o) continue;
+      // A NEW object, the way decorate does it below and for its reason: some entries in `all` come
+      // from a module-level singleton, and assigning through one writes to shared state.
+      all[i] = { ...all[i], ...(o.description ? { description: o.description } : {}),
+        ...(o.inputSchema ? { inputSchema: o.inputSchema } : {}) };
     }
   }
   // The loop kit's view of the manifest: every tool's mechanism (for the check hook), which tools
   // declare `force` themselves (for the gate), and the entries as the client will see them —
   // screenshot's budget arguments, `force` on gated tools, the project's description notes.
-  MECHANISM.clear();
-  for (const t of tools) if (typeof t.mechanism === "string") MECHANISM.set(t.name, t.mechanism);
-  for (const t of bbTools) MECHANISM.set(t.name, blockbenchMechanism(t.name));
-  DECLARES_FORCE.clear();
-  for (const t of all) if (t.inputSchema?.properties?.force) DECLARES_FORCE.add(t.name);
+  // Built fresh and SWAPPED, never cleared in place. The watcher rebuilds this list every 3-15
+  // seconds and finishReply reads MECHANISM to pick which loop check a call triggers, so a call that
+  // overlapped a rebuild used to read an empty map, get a null mechanism, and skip its check
+  // silently — a check that does not fire is the exact failure the loop file exists to prevent
+  // (LOOP_KIT_DESIGN.md section 11, finding 4, arrived at from the gate side). Single assignment is
+  // atomic here, so there is no window left at all.
+  const mechanism = new Map();
+  for (const t of tools) if (typeof t.mechanism === "string") mechanism.set(t.name, t.mechanism);
+  for (const t of bbTools) mechanism.set(t.name, blockbenchMechanism(t.name));
+  const declaresForce = new Set();
+  for (const t of all) if (t.inputSchema?.properties?.force) declaresForce.add(t.name);
+  MECHANISM = mechanism;
+  DECLARES_FORCE = declaresForce;
   for (let i = 0; i < all.length; i++) all[i] = decorate(all[i]);
   // A project keep-list gets the loud typo check the built-in narrow slices deliberately do not:
   // a project author has no probe file to make a misspelt name visible, and a kept name that is
@@ -1905,6 +1924,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         held: bb.shared ? "shared" : bb.pinned ? "pinned" : bb.claimed ? "this session" : "unclaimed",
         session: blockbenchSession().id,
       };
+    } else if (servesBlockbench(servedProfile) && blockbenchLost()) {
+      // NO LONGER OFF THE CACHE ALONE (BLOCKBENCH_ISOLATION_DESIGN.md §13): a window the plugin
+      // said this session lost - taken back, recycled, stopped, closed by hand - is reported as
+      // lost, with the sentence, rather than as still held. The next call resolves a fresh one.
+      const l = blockbenchLost();
+      data.result.blockbench = { port: null, window: null, held: "none", session: blockbenchSession().id,
+        lost: { port: l.port, window: l.window, reason: l.reason, note: l.note } };
     }
   }
   // A `what` that resolves against no registry no longer dead-ends. Two fallthroughs, in this order:

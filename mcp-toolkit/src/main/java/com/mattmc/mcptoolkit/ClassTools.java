@@ -5,6 +5,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 
 import java.lang.annotation.Annotation;
+import java.lang.instrument.Instrumentation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -99,9 +100,17 @@ public final class ClassTools {
                 // The authority said no, so this is a fact rather than a failure.
                 r.addProperty("loaded", false);
                 r.addProperty("lookup", "loaded_class_list");
-                r.addProperty("note", "this JVM has not loaded " + name + " - a class loads when "
+                String note = "this JVM has not loaded " + name + " - a class loads when "
                     + "something first touches it, so this is an answer about the run, not about "
-                    + "whether the class exists");
+                    + "whether the class exists";
+                // Said only when a hotswap has already established the state, which is the only way
+                // this class knows it: a MIXIN on a game without the flag is never loaded at all, and
+                // "not loaded yet" reads like a class that simply has not been touched.
+                String state = MixinHotswap.state();
+                if (state != null && !MixinHotswap.ARMED.equals(state)) {
+                    note += ". If it is a MIXIN it will never load here: " + MixinHotswap.why(state);
+                }
+                r.addProperty("note", note);
                 return r;
             }
             try {
@@ -109,6 +118,16 @@ public final class ClassTools {
             } catch (ClassNotFoundException | LinkageError e) {
                 throw new IllegalArgumentException("no such class on this classpath: " + name
                     + " (" + e.getClass().getSimpleName() + ")");
+            } catch (RuntimeException e) {
+                // A MIXIN class cannot be loaded through Knot at all - the transformer refuses it,
+                // because a mixin is meant to be applied and not run. Class.forName is therefore the
+                // wrong instrument for exactly the classes 0.149.0 made swappable, and the right one
+                // needs the agent this read will not attach by itself.
+                throw new IllegalArgumentException(name + " could not be loaded to be read (" + e
+                    + "). If it is a MIXIN, that is expected: mixin classes are applied, not loaded, "
+                    + "and the only copy that exists at runtime is the shell inside Mixin's hot-swap "
+                    + "agent - which this read can see only once an agent is attached. hotswap_class "
+                    + "attaches one, so query it again after any swap.");
             }
             r.addProperty("lookup", "class_forname");
             r.addProperty("lookup_note", "no instrumentation agent is attached (hotswap_class "
@@ -127,6 +146,15 @@ public final class ClassTools {
         r.add("interfaces", ifaces);
         r.addProperty("class_loader", cls.getClassLoader() == null
             ? "bootstrap" : cls.getClassLoader().getClass().getName());
+        if (MixinHotswap.isAgentShell(cls)) {
+            // Everything below is read off the loaded class, and for a shell the honest reading of
+            // an empty table is "this class is a stand-in", not "this mixin declares nothing".
+            r.addProperty("mixin_shell", true);
+            r.addProperty("shell_note", "this is the SHELL Mixin's hot-swap agent holds for the mixin "
+                + "- an empty class carrying its name, which is what a swap redefines to trigger the "
+                + "re-apply. Its method and field tables are empty BY CONSTRUCTION and say nothing "
+                + "about the mixin's source; read the TARGET class to see what the mixin merged.");
+        }
 
         URL source = sourceOf(cls);
         r.addProperty("source", source == null ? null : source.toString());
@@ -141,7 +169,7 @@ public final class ClassTools {
         r.add("mixins", mixins);
         r.add("methods", methods(cls, inherited, contains, limit));
         r.add("fields", fields(cls, inherited, contains, limit));
-        r.add("hotswap", hotswap(cls, source, fromJar || fromJarFile, mixins.get("count").getAsInt()));
+        r.add("hotswap", hotswap(cls, fromJar || fromJarFile, mixins.get("count").getAsInt()));
         return r;
     }
 
@@ -149,18 +177,14 @@ public final class ClassTools {
      * The loaded-class list, but only if a hotswap has ALREADY attached the agent. Deliberately does
      * not attach one: the whole point of this lookup is to answer "is this loaded" without changing
      * the answer, and attaching an agent to find out is a larger act than the read.
+     *
+     * <p>Takes the same first-non-shell copy {@code hotswap_class} does. The list has no defined
+     * order, so taking the first match would report a MIXIN SHELL's empty method table as the class's
+     * own whenever the real copy happened to sort later.
      */
     private static Class<?> findLoaded(final String name) {
         var inst = HotswapTools.instrumentationIfAttached();
-        if (inst == null) {
-            return null;
-        }
-        for (Class<?> c : inst.getAllLoadedClasses()) {
-            if (c.getName().equals(name)) {
-                return c;
-            }
-        }
-        return null;
+        return inst == null ? null : HotswapTools.primary(HotswapTools.loadedCopies(inst, name));
     }
 
     private static String kind(final Class<?> cls) {
@@ -239,6 +263,25 @@ public final class ClassTools {
                 + "injects into a method WITHOUT leaving a handler on this class, is invisible here");
         }
         return o;
+    }
+
+    /**
+     * The first mixin that merged a method into this class, or null if none did — the same reading as
+     * {@link #mixins}, reduced to the one fact a caller about to redefine the class needs. Shared with
+     * {@link HotswapTools}, which refuses a mixin TARGET and names this mixin as the route instead.
+     */
+    static String anyMergedMixin(final Class<?> cls) {
+        try {
+            for (Method m : cls.getDeclaredMethods()) {
+                String owner = mergedFrom(m);
+                if (owner != null) {
+                    return owner;
+                }
+            }
+        } catch (RuntimeException | LinkageError e) {
+            return null; // a class whose method table will not resolve is not a mixin target finding
+        }
+        return null;
     }
 
     /**
@@ -343,20 +386,26 @@ public final class ClassTools {
      * The precheck {@code hotswap_class} cannot perform for itself until it has already failed.
      * Everything here is a property of the LOADED class, so it is knowable before the call.
      */
-    private static JsonObject hotswap(final Class<?> cls, final URL source, final boolean jarish,
+    private static JsonObject hotswap(final Class<?> cls, final boolean jarish,
                                       final int mergedMixins) {
         JsonObject o = new JsonObject();
         boolean mixed = mergedMixins > 0;
         String vanilla = cls.getName().startsWith("net.minecraft.") ? "a Minecraft class" : null;
-        if (jarish) {
+        // Asked of the RESOURCE a swap would read, not of the code source: the two disagree on a
+        // mixin SHELL, which has no code source at all while its loader still resolves the .class out
+        // of the classes directory. Reading the code source sent callers to 'dir' for a swap the
+        // default already handles - a precheck that contradicts the tool it prechecks.
+        URL res = HotswapTools.classpathResource(cls, cls.getName());
+        if (res == null) {
+            o.addProperty("classpath_default", false);
+            o.addProperty("note", "this class's loader resolves no .class resource for it (a "
+                + "generated or bootstrap class) - hotswap_class has nowhere to re-read bytes from; "
+                + "pass 'file' or 'dir'");
+        } else if (jarish || !"file".equals(res.getProtocol())) {
             o.addProperty("classpath_default", false);
             o.addProperty("note", "loaded from a jar, so hotswap_class' classpath default would "
                 + "re-read the ALREADY-LOADED bytes and report success having changed nothing - pass "
                 + "'file' or 'dir' pointing at freshly compiled classes");
-        } else if (source == null) {
-            o.addProperty("classpath_default", false);
-            o.addProperty("note", "no code source (generated or bootstrap class) - hotswap_class has "
-                + "nowhere to re-read bytes from; pass 'file' or 'dir'");
         } else {
             o.addProperty("classpath_default", true);
         }
@@ -364,11 +413,52 @@ public final class ClassTools {
             o.addProperty("safe", false);
             o.addProperty("safety_note", (mixed ? "this class carries merged mixin methods"
                 : "this is " + vanilla) + " - redefining it from compiled sources would silently drop "
-                + "its load-time transforms. hotswap_class is for MOD classes.");
+                + "its load-time transforms, and hotswap_class refuses it.");
+            String route = mergedOwner(cls);
+            if (route != null) {
+                o.addProperty("route", "swap " + route + " instead: since 0.149.0 redefining a MIXIN "
+                    + "class makes Mixin's own agent re-apply it to this target. Changing what an "
+                    + "existing injector does lands; adding one is structural and needs a restart.");
+            }
         } else {
             o.addProperty("safe", true);
+            if (isMixinClass(cls)) {
+                o.addProperty("mixin_class", true);
+                o.addProperty("route", "this IS a mixin and Mixin's hot-swap agent is watching it: "
+                    + "redefining it re-applies it to its targets (0.149.0).");
+            }
         }
         return o;
+    }
+
+    /** The mixin named in this class's merged methods, for the {@code route} line. */
+    private static String mergedOwner(final Class<?> cls) {
+        return anyMergedMixin(cls);
+    }
+
+    /**
+     * Whether Mixin's agent is holding a shell for this class, which is the exact and only proof that
+     * it is a registered mixin AND that the agent is armed to re-apply it. Needs the instrumentation,
+     * so it answers false in a session that has not swapped anything yet - the same honest silence
+     * {@code lookup} already reports.
+     */
+    private static boolean isMixinClass(final Class<?> cls) {
+        if (MixinHotswap.isAgentShell(cls)) {
+            // The usual case, and the one the first cut missed: a mixin is normally never defined in
+            // Knot at all, so the shell is not a SECOND copy to be found beside the real one - it is
+            // the only copy there is, and it is the one being asked about.
+            return true;
+        }
+        Instrumentation inst = HotswapTools.instrumentationIfAttached();
+        if (inst == null) {
+            return false;
+        }
+        for (Class<?> other : inst.getAllLoadedClasses()) {
+            if (other != cls && cls.getName().equals(other.getName()) && MixinHotswap.isAgentShell(other)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static URL sourceOf(final Class<?> cls) {

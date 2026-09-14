@@ -87,9 +87,17 @@ public final class McpConn {
     }
 
     /**
-     * Drop connections nothing has spoken on for {@link #IDLE_MS}. A client that goes away without a
-     * DELETE (the common case: the whole agent program exited) leaves its entry behind, and an entry
-     * costs a toolkit session that the drone reaper and the session list both still believe in.
+     * Drop connections nothing has spoken on for {@link #IDLE_MS}, <b>and end the toolkit session
+     * each one was acting as</b>. A client that goes away without a DELETE (the common case: the
+     * whole agent program exited) leaves its entry behind, and an entry costs a toolkit session that
+     * the drone reaper and the session list both still believe in.
+     *
+     * <p>The {@code Sessions.abort} is what makes that sentence true. Without it the reap dropped
+     * the connection and left the session, and the thing actually ending those sessions was the
+     * three-minute staleness window this reap has nothing to do with — the code worked and the
+     * stated mechanism was not the one running. With the per-request touch in
+     * {@code McpEndpoint.post} the staleness window no longer fires under a live client at all, so
+     * this is now the only thing that ends an abandoned one.
      */
     static void reap() {
         reap(System.currentTimeMillis());
@@ -105,7 +113,10 @@ public final class McpConn {
             }
         }
         for (String id : dead) {
-            LIVE.remove(id);
+            McpConn gone = LIVE.remove(id);
+            if (gone != null && gone.toolkitSession != null) {
+                com.mattmc.mcptoolkit.Sessions.abort(gone.toolkitSession);
+            }
         }
     }
 

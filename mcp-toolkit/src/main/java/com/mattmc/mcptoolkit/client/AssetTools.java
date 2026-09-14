@@ -348,14 +348,39 @@ public final class AssetTools {
         mc.reloadResourcePacks().whenComplete((v, err) -> {
             if (err != null) {
                 out.completeExceptionally(err);
-            } else {
+                return;
+            }
+            // THE FUTURE COMPLETES BEFORE THE SCREEN DOES. The first animation-loop run (2026-09-13)
+            // pushed, staged four frozen poses and rendered the row 300 ms after this tool had
+            // answered: an empty sky, then four magenta error cubes, then - two seconds later - the
+            // model. The loading overlay is still up when the reload future resolves, and behind it
+            // the level renderer and the entity bakes are being rebuilt; a caller that acts on
+            // "reloaded" is acting on a promise. So the answer waits for the overlay to clear
+            // (bounded, and it says when it could not), and the caller's next act sees the world.
+            final long settleStarted = System.currentTimeMillis();
+            final long deadline = settleStarted + 15_000L;
+            final Runnable[] poll = new Runnable[1];
+            poll[0] = () -> {
+                if (mc.gui.overlay() != null && System.currentTimeMillis() < deadline) {
+                    CompletableFuture.delayedExecutor(100L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        .execute(() -> mc.execute(poll[0]));
+                    return;
+                }
                 JsonObject r = new JsonObject();
                 r.addProperty("reloaded", true);
                 r.addProperty("pack", PACK_ID);
                 r.addProperty("selected", repo.getSelectedIds().contains(PACK_ID));
+                long waited = System.currentTimeMillis() - settleStarted;
+                if (waited >= 50L) {
+                    r.addProperty("overlay_cleared_after_ms", waited);
+                }
+                if (mc.gui.overlay() != null) {
+                    r.addProperty("overlay", "the loading overlay was still up 15 s after the reload completed; renders and screenshots may not show the new assets yet");
+                }
                 com.mattmc.mcptoolkit.DataTools.reportProblems(r, watermark);
                 out.complete(r);
-            }
+            };
+            mc.execute(poll[0]);
         });
         return out;
     }

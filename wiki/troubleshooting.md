@@ -32,6 +32,12 @@ the game actually holding).
 - The bridge is disabled — in production it is `config/mcptoolkit.properties`; `-Dmcptoolkit.port`
   overrides in either mode.
 
+**A `http://127.0.0.1:25500/...` registration answers nothing.**
+
+That URL is the daemon, and nothing starts the daemon for you. `node mcp-server/daemon.mjs status`
+says whether it is up; `serve` starts it. If it is up but your project is not in it, `daemon.mjs
+projects` lists what it knows and `add <root>` registers one.
+
 **The tool list is short and only has memory and loop tools in it.**
 
 That is the MCP server being honest while the game is down. It serves local tools only rather than
@@ -82,6 +88,19 @@ session's assumptions are stale.
 | Your own extension's tool is missing | `ping`'s `extensions` array records the throw or the name collision. Names are flat and shared; prefix with your mod id |
 
 ## My change does not appear
+
+**I saved the file and nothing reached the game.**
+
+Only if you are relying on the disk feed. Three things, in order. Is the daemon running
+(`daemon.mjs status`)? Is the watcher on (`MMCPD_WATCH=0` turns it off)? And what did it decide —
+`daemon.mjs changes`, or `get_events {type: "edit"}` from inside a session, gives you a row per
+change with a verdict on it. `refused` means the bytes are identical to what is already loaded;
+`not-yet` means that Java file does not compile; `pending-rebuild` means it is structural and no
+amount of saving will land it; `none` means the game was down.
+
+Also check the path: the watcher classifies by where a file sits, so an asset only lands from
+`src/*/resources/assets/`, data from `src/*/resources/data/` (or `generated/data/`), and Java from
+`src/*/java/`. A file somewhere else gets a row saying `none`.
 
 **A texture or model will not change no matter what you do.**
 

@@ -85,6 +85,9 @@
 //     mcptoolkitEntity({action: 'push',    model: 'spider', target: 'source', namespace: 'rocketeer'})
 //     mcptoolkitEntity({action: 'verify',  project: PROJECT})           the check battery
 //     mcptoolkitEntity({action: 'stage',   model: 'spider', bridge: GAME})
+//     mcptoolkitEntity({action: 'push',    model: 'spider', project: PROJECT, bridge: GAME, session: SESSION})
+//         `session` (SESSION in risky_eval, bridge plugin 0.11.0) makes the stage slot per session:
+//         tag 'preview-<id>' unless `tag` is given, so two sessions on one game keep their own body
 //     mcptoolkitEntity({action: 'clear',   bridge: GAME})               despawn the previews
 //     mcptoolkitEntity({action: 'settings', set: {sourceRoot: '...', bridges: {...}}})
 //
@@ -135,6 +138,12 @@
         // How close two parallel faces must be to count as sharing a plane. Authors work in whole
         // and half pixels; this is loose enough for float noise and tight enough to mean something.
         coplanarEps: 0.0005,
+        // THE NEAR BAND (0.7.0). Two parallel faces that share area and sit further apart than
+        // coplanarEps but closer than this are not one plane, and the depth buffer cannot tell them
+        // apart at distance either: 24-bit depth at 30-70 blocks resolves a few hundredths of a
+        // pixel, so a 0.01 px lift z-fights exactly like a 0 px one, only from further away.
+        // Authors work in halves and quarters; nothing deliberate lives inside a tenth.
+        nearPx: 0.1,
         // WHICH GAME the live push and every stage_entity call go to (TODO.md 1.9). Deliberately
         // EMPTY, on exactly the argument sourceRoot above makes: this file carried a bare
         // 'http://127.0.0.1:25599/cmd', and since per-project bridge ports (RELEASE_1.md B0) that
@@ -148,6 +157,10 @@
         // Default stage slot. Re-pushing the same tag replaces the previous body.
         tag: 'preview'
     };
+
+    var TARGETS = ['live', 'source', 'both'];
+    /** The per-project maps a settings patch MERGES into rather than replaces (section 13). */
+    var MAPS = ['sourceRoots', 'bridges'];
 
     var settings = {};
     var lastReport = null;      // the last verify report, so the panel can re-print it
@@ -195,7 +208,13 @@
     }
 
     function saveSettings(patch) {
-        Object.assign(settings, patch || {});
+        patch = patch || {};
+        // The headless `{action:'settings', set:{bridges:{spider:...}}}` used to REPLACE the whole
+        // map, dropping every other project's entry, where the panel had always merged (13).
+        Object.keys(patch).forEach(function (k) {
+            if (MAPS.indexOf(k) >= 0 && patch[k] && typeof patch[k] === 'object') settings[k] = Object.assign({}, settings[k] || {}, patch[k]);
+            else settings[k] = patch[k];
+        });
         try {
             localStorage.setItem(STORE_KEY, JSON.stringify(settings));
         } catch (e) { /* nothing to do about it, and losing a setting is not worth failing a push over */ }
@@ -224,6 +243,17 @@
      * looks at, a wrong PORT is accepted by somebody else's running game without a word.
      */
     function bridgeFor(opts, projectName) {
+        if (opts && opts.bridge === null) {
+            // AN EXPLICIT NULL IS REFUSED (BLOCKBENCH_ISOLATION_DESIGN.md section 13): GAME is null
+            // when the shim never told this window which game the session drives, and an agent
+            // passes it dutifully. Until 0.4.0 that fell through to the stored URL - whichever game
+            // somebody typed in last - which is the resolution the null rule exists to prevent. An
+            // ABSENT key still means the store.
+            throw new Error('bridge is null: GAME is null because this session never told Blockbench which game it drives'
+                + ' — pass the game bridge URL (`ping` says it: http://127.0.0.1:<port>), or set it once:'
+                + ' mcptoolkitEntity({action:"settings", set:{bridges:{"' + (projectName || '<project>')
+                + '":"http://127.0.0.1:25640"}}}) and omit the key');
+        }
         var url = (opts && opts.bridge)
             || (projectName && settings.bridges[projectName])
             || settings.bridge;
@@ -252,7 +282,13 @@
      */
     function projectOf(opts) {
         var p = opts && opts.project;
-        if (p === undefined || p === null) {
+        if (p === null) {
+            // PROJECT is null inside risky_eval when no project is open in the window; the active
+            // tab is not an answer to a caller that was told there is none (section 13).
+            throw new Error('project is null: PROJECT is null because no project is open in this window'
+                + ' — open one first (project op:new / op:open) and pass PROJECT; omit the key only to mean the active tab');
+        }
+        if (p === undefined) {
             if (typeof Project === 'undefined' || !Project) throw new Error('no project is open');
             return Project;
         }
@@ -1150,6 +1186,7 @@
         // overlap becomes the answer), which is the most common contact in a boxy model and the
         // one this check exists to be right about.
         var maxSep = -Infinity;
+        var maxAxis = null;
         for (i = 0; i < axes.length; i++) {
             var len = length(axes[i]);
             if (len < 1.0e-6) continue;      // parallel edges: the cross degenerates, and the face
@@ -1161,10 +1198,13 @@
                 + Math.abs(dot(b.axes[1], L)) * b.half[1]
                 + Math.abs(dot(b.axes[2], L)) * b.half[2];
             var separation = Math.abs(dot(d, L)) - (ra + rb);
-            if (separation > maxSep) maxSep = separation;
+            if (separation > maxSep) { maxSep = separation; maxAxis = L; }
         }
-        if (maxSep > 1.0e-9) return { hit: false, gap: maxSep, depth: 0 };
-        return { hit: true, gap: 0, depth: Math.max(0, -maxSep) };
+        // `axis` is the unit axis that number was measured on: the contact normal of a touching
+        // pair, which is what the animated arm's joint allowance needs to know which way a swing
+        // buries a corner (see jointAllowance).
+        if (maxSep > 1.0e-9) return { hit: false, gap: maxSep, depth: 0, axis: maxAxis };
+        return { hit: true, gap: 0, depth: Math.max(0, -maxSep), axis: maxAxis };
     }
 
     /** The six faces of an oriented box, as a plane plus a quad, in world space. */
@@ -1198,20 +1238,29 @@
      * at (0, ±1, 0), so two differently-yawed parts still share their top and bottom planes, and
      * this finds them. (That is the spider's grippers: yawed 15°, y-faces never moved, sharing
      * planes with both the sternum and the head. Pitching them −10° is what cleared it.)
+     *
+     * AND THE NEAR BAND (0.7.0), the same instrument one notch wider: a pair of parallel faces
+     * that share area and sit apart by more than `eps` but no more than `nearPx` is `near`. It is
+     * not one plane, so the coplanar rule was right to pass it, and it z-fights all the same once
+     * the camera is far enough that the depth buffer cannot resolve the lift - a 0.05 px cap on a
+     * base flickers from thirty blocks away and read `clear` (or `sunk`, when the lift went the
+     * other way) in the table. Both kinds come back, best shared area each, so the ladder in
+     * pairTable can rank coplanar above near above sunk.
      */
-    function coplanar(a, b, eps) {
-        var best = null;
+    function sharedPlanes(a, b, eps, nearPx) {
+        var best = { coplanar: null, near: null };
         var fa = faces(a), fb = faces(b);
         for (var i = 0; i < fa.length; i++) {
             for (var j = 0; j < fb.length; j++) {
                 var A = fa[i], B = fb[j];
                 if (Math.abs(dot(A.normal, B.normal)) < 1 - 1.0e-6) continue;
                 var offset = Math.abs(dot(subv(B.centre, A.centre), A.normal));
-                if (offset > eps) continue;
+                var slot = offset <= eps ? 'coplanar' : offset <= nearPx ? 'near' : null;
+                if (!slot) continue;
                 var area = sharedArea(A, B);
                 if (area <= 1.0e-6) continue;
-                if (!best || area > best.area) {
-                    best = {
+                if (!best[slot] || area > best[slot].area) {
+                    best[slot] = {
                         area: area,
                         offset: offset,
                         faceA: A.side + A.axis,
@@ -1336,15 +1385,43 @@
     function uvAudit(boxes, texture, pixels, previousFaces) {
         var rects = boxes.map(function (box) {
             var w = box.size[0], h = box.size[1], d = box.size[2];
+            // The face area the PAINTER fills: each face rounded out to whole texels. For a whole
+            // cube that is exactly 2*(w*h + d*h + w*d); for a fractional one it is what the sheet
+            // will actually hold, so the arithmetic below agrees with the coverage walk.
+            var area = 0;
+            faceRects(box).forEach(function (f) {
+                area += (Math.ceil(f.x + f.w) - Math.floor(f.x)) * (Math.ceil(f.y + f.h) - Math.floor(f.y));
+            });
             return {
                 label: box.label,
                 x: box.uv[0], y: box.uv[1],
                 w: 2 * (d + w), h: d + h,
-                area: 2 * (w * h + d * h + w * d)
+                area: area
             };
         });
         var findings = [];
         var i, j;
+        // A FRACTIONAL SIZE, named as itself. The first live loop run (2026-09-13) placed a 2x4.5
+        // leg, and the check's only word for it was `stray`: the painter fills the half row as a
+        // whole one and the arithmetic counts it as paint outside every face. That misdirects the
+        // fix (the author reaches for the sheet, and the defect is the cube). What the game does
+        // with a 4.5 px face is sample half a texel of whatever sits beside it on the sheet, which
+        // is a smear no picture at 384 px shows. So it is a finding of its own, first in the list,
+        // and the coverage below rounds the face out the way the painter does, so one fractional
+        // cube is ONE line and not a stray count plus an arithmetic mismatch that both mean it.
+        boxes.forEach(function (box) {
+            var axes = [];
+            for (var ax = 0; ax < 3; ax++) {
+                if (Math.abs(box.size[ax] - Math.round(box.size[ax])) > 1.0e-6) axes.push('xyz'[ax]);
+            }
+            if (axes.length) {
+                findings.push({ kind: 'fractional', a: box.label, b: '',
+                    detail: 'size ' + box.size.map(function (s) { return num(s); }).join('x')
+                        + ' is not whole on ' + axes.join('/')
+                        + ' - a half-pixel face samples half a texel of its neighbour;'
+                        + ' keep SIZES whole (positions may be fractional)' });
+            }
+        });
         for (i = 0; i < rects.length; i++) {
             var r = rects[i];
             if (r.x + r.w > texture.width || r.y + r.h > texture.height
@@ -1386,12 +1463,19 @@
 
         var paint = { painted: painted, opaque: null, ok: null };
         if (pixels && pixels.data) {
-            var opaque = 0;
+            var opaque = 0, faint = 0;
             for (i = 3; i < pixels.data.length; i += 4) {
-                if (pixels.data[i] > 0) opaque++;
+                if (pixels.data[i] >= ALPHA_MIN) opaque++;
+                else if (pixels.data[i] > 0) faint++;
             }
             paint.opaque = opaque;
+            paint.faint = faint;
             paint.ok = opaque === painted;
+            if (faint > 0) {
+                findings.push({ kind: 'faint', a: '', b: '',
+                    detail: faint + ' texel(s) with alpha 1..' + (ALPHA_MIN - 1) + ' - the game'
+                        + ' discards alpha below 0.1 (' + ALPHA_MIN + '/255), so they render as holes' });
+            }
         }
 
         // PER-FACE coverage and stray paint (LOOP_KIT_DESIGN.md §3, §5.4). The whole-sheet count
@@ -1406,12 +1490,16 @@
             boxes.forEach(function (box) {
                 faceRects(box).forEach(function (f) {
                     var n = 0, inside = 0;
-                    for (var yy = f.y; yy < f.y + f.h; yy++) {
-                        for (var xx = f.x; xx < f.x + f.w; xx++) {
+                    // Rounded OUT to whole texels: a fractional face (reported above) is walked
+                    // the way the painter fills it, so its half row is this face's and not stray.
+                    var y0 = Math.floor(f.y), y1 = Math.ceil(f.y + f.h);
+                    var x0 = Math.floor(f.x), x1 = Math.ceil(f.x + f.w);
+                    for (var yy = y0; yy < y1; yy++) {
+                        for (var xx = x0; xx < x1; xx++) {
                             if (xx < 0 || yy < 0 || xx >= pixels.width || yy >= pixels.height) continue;
                             inside++;
                             covered[yy * pixels.width + xx] = 1;
-                            if (pixels.data[(yy * pixels.width + xx) * 4 + 3] > 0) n++;
+                            if (pixels.data[(yy * pixels.width + xx) * 4 + 3] >= ALPHA_MIN) n++;
                         }
                     }
                     faces.push({ label: box.label + '.' + f.face, x: f.x, y: f.y, w: f.w, h: f.h,
@@ -1420,7 +1508,7 @@
             });
             var stray = 0;
             for (var p = 0; p < covered.length; p++) {
-                if (!covered[p] && pixels.data[p * 4 + 3] > 0) stray++;
+                if (!covered[p] && pixels.data[p * 4 + 3] >= ALPHA_MIN) stray++;
             }
             paint.stray = stray;
             if (stray > 0) {
@@ -1445,6 +1533,15 @@
         return { findings: findings, paint: paint, faces: faces };
     }
 
+    /**
+     * The game's cutout threshold, in 8-bit alpha. The entity pipeline compiles `entity.fsh` with
+     * `ALPHA_CUTOUT` = `RenderPipelines.ALPHA_CUTOUT_THRESHOLD_DEFAULT` = 0.1f and the shader
+     * DISCARDS `color.a < ALPHA_CUTOUT`, so a texel at alpha 25 (0.098) is a hole in the game and a
+     * texel at 26 (0.102) is paint. A check that counted `alpha > 0` called both paint, which is
+     * exactly a face that reads complete on the sheet and torn in the world.
+     */
+    var ALPHA_MIN = 26;
+
     /** The texture pixels, when Blockbench is there to be asked. Null in a harness, and that is fine. */
     function pixelsOf(textureName) {
         if (typeof Texture === 'undefined' || !Texture.all) return null;
@@ -1466,7 +1563,7 @@
      * arm arrived, because an animated pose needs the same classification over a different set of
      * boxes -- and the rest pose must keep getting EXACTLY this one, unchanged.
      */
-    function pairTable(boxes, sinkPx, eps) {
+    function pairTable(boxes, sinkPx, eps, nearPx) {
         var pairs = [];
         for (var i = 0; i < boxes.length; i++) {
             for (var j = i + 1; j < boxes.length; j++) {
@@ -1477,10 +1574,12 @@
                 // reports depth 0.000, which reads as clean) and not overlapping either — they are
                 // the commonest z-fight there is. Deciding whether to look for a shared plane from
                 // SAT's verdict is how that pair goes unreported.
-                var plane = coplanar(a, b, eps);
+                var planes = sharedPlanes(a, b, eps, nearPx);
+                var plane = planes.coplanar || planes.near;
                 var kind;
                 if (hit.hit && hit.depth > sinkPx) kind = 'overlap';
-                else if (plane) kind = 'coplanar';
+                else if (planes.coplanar) kind = 'coplanar';
+                else if (planes.near) kind = 'near';     // a hair apart: z-fights at distance
                 else if (hit.hit && hit.depth > 0) kind = 'sunk';
                 else kind = 'clear';
                 pairs.push({
@@ -1499,11 +1598,11 @@
         // Worst first, and the FULL table on every run: fixing one coplanarity routinely creates
         // another, so a table trimmed to "what changed" trains a reader to trust a green they have
         // not actually been shown.
-        var rank = { overlap: 0, coplanar: 1, sunk: 2, clear: 3 };
+        var rank = { overlap: 0, coplanar: 1, near: 2, sunk: 3, clear: 4 };
         pairs.sort(function (x, y) {
             if (rank[x.kind] !== rank[y.kind]) return rank[x.kind] - rank[y.kind];
             if (x.kind === 'overlap' || x.kind === 'sunk') return y.depth - x.depth;
-            if (x.kind === 'coplanar') return y.plane.area - x.plane.area;
+            if (x.kind === 'coplanar' || x.kind === 'near') return y.plane.area - x.plane.area;
             return x.gap - y.gap;
         });
         return pairs;
@@ -1521,15 +1620,44 @@
      *
      * And an overlap that is ALREADY an overlap at rest is marked, not re-counted: it is the same
      * defect seen again, and counting it once per sample would make one bad cube look like twelve.
+     *
+     * THE MIRROR FINDING: `detached`. A pair that TOUCHES at rest (sunk, coplanar, or gap 0 - a
+     * leg in its hip, a jaw on its skull) and opens a gap at some sample is the signature of a
+     * pivot in the wrong place: a leg whose bone pivots at the joint rotates INTO the body at one
+     * corner and stays in contact, while one pivoting at the foot swings the whole leg away and
+     * shows daylight through the hip. It is the same instrument as the overlap arm pointed the
+     * other way, and it only ever looks at pairs the rest table already put in contact, so a pair
+     * that was never touching (the two forelegs) cannot produce it however far apart they swing.
+     *
+     * WHAT A JOINT EXPLAINS (0.7.0). A limb on the RIGHT pivot buries a corner deeper as it swings:
+     * a leg hanging from a pivot at its hip, sunk half a pixel, rotates one top corner INTO the
+     * body by half its width times the sine of the angle - 4 px wide at 30 degrees is 1 px deeper,
+     * and it is invisible, and it is how every vanilla quadruped's hip works. Measured against the
+     * flat 1 px rest tolerance that read as an overlap, and the beetle walk was clean only because
+     * its legs are narrow. So for a pair the rest table put IN CONTACT the tolerance at a sample is
+     * `sinkPx + reach * sin(angle)`: `angle` the pair's rotation relative to its rest orientation,
+     * `reach` the smaller box's extent along the swing direction in the contact plane (the joint
+     * is at the limb's face, so it is the limb's half-width that reaches, never the body's). A
+     * pivot placed up the thigh, a translation that drives a limb in, or a limb passing through a
+     * part it never touched at rest all exceed that and are named as before; a burial the joint
+     * explains is reported in the long form (`explained`) and is not a finding, because a tolerance
+     * that hides its subject is a blanket skip.
      */
-    function animatedFindings(model, restPairs, sinkPx) {
+    function animatedFindings(model, restBoxes, restPairs, sinkPx) {
         var clips = model.animations || {};
         var names = Object.keys(clips);
         var restOverlaps = {};
+        var restContact = {};
+        var byLabel = {};
+        restBoxes.forEach(function (b) { byLabel[b.label] = b; });
         restPairs.forEach(function (p) {
             if (p.kind === 'overlap') restOverlaps[p.a + '|' + p.b] = num(p.depth);
+            if (p.kind !== 'clear' || p.gap <= CONTACT_EPS) {
+                restContact[p.a + '|' + p.b] = restFrame(byLabel[p.a], byLabel[p.b]);
+            }
         });
         var findings = [];
+        var explained = [];
         var samples = 0;
         var approx = {};
         var covered = [];
@@ -1546,13 +1674,29 @@
                         var a = boxes[i], b = boxes[j];
                         if (a.part === b.part) continue;   // rigid together; the rest table has it
                         var hit = sat(a, b);
-                        if (!hit.hit || hit.depth <= sinkPx) continue;
                         var key = a.label + '|' + b.label;
-                        findings.push({
-                            clip: name, t: t, a: a.label, b: b.label,
-                            depth: num(hit.depth),
-                            fresh: !(key in restOverlaps)
-                        });
+                        var joint = restContact[key] ? jointAllowance(a, b, restContact[key], sinkPx) : null;
+                        var allowed = joint ? joint.allowed : sinkPx;
+                        if (hit.hit && hit.depth > sinkPx) {
+                            var row = {
+                                kind: 'overlap', clip: name, t: t, a: a.label, b: b.label,
+                                depth: num(hit.depth),
+                                allowed: num(allowed),
+                                swing: joint ? num(joint.degrees) : 0,
+                                excess: num(hit.depth - allowed),
+                                fresh: !(key in restOverlaps)
+                            };
+                            (hit.depth > allowed ? findings : explained).push(row);
+                        } else if (!hit.hit && hit.gap > sinkPx && restContact[key]) {
+                            findings.push({
+                                kind: 'detached', clip: name, t: t, a: a.label, b: b.label,
+                                depth: num(hit.gap),
+                                allowed: num(sinkPx),
+                                swing: joint ? num(joint.degrees) : 0,
+                                excess: num(hit.gap - sinkPx),
+                                fresh: true
+                            });
+                        }
                     }
                 }
             });
@@ -1560,21 +1704,87 @@
         // Worst first, but only the deepest sample of each pair per clip: a swing that passes
         // through a torso overlaps at every sample around the crossing, and twelve rows describing
         // one collision is the same "full table nobody reads" failure in a different dimension.
-        var worst = {};
-        findings.forEach(function (f) {
-            var key = f.clip + '|' + f.a + '|' + f.b;
-            if (!worst[key] || f.depth > worst[key].depth) worst[key] = f;
-        });
-        var deduped = Object.keys(worst).map(function (k) { return worst[k]; });
-        deduped.sort(function (x, y) { return y.depth - x.depth; });
+        // Worst means furthest PAST what was allowed there (`excess`): a 2.9 px burial a 30 degree
+        // joint swing explains 2 px of is a smaller finding than a 2.5 px burial nothing explains.
+        // (`depth` is the gap for a detached pair; `excess` sorts both kinds.) The explained list
+        // is kept by DEPTH: a limb on the right pivot has the same excess at every sample (its
+        // burial and its allowance grow by the same reach * sin), so excess cannot pick one.
+        function worstPerPair(list, by) {
+            var worst = {};
+            list.forEach(function (f) {
+                var key = f.clip + '|' + f.kind + '|' + f.a + '|' + f.b;
+                if (!worst[key] || f[by] > worst[key][by]) worst[key] = f;
+            });
+            var out = Object.keys(worst).map(function (k) { return worst[k]; });
+            out.sort(function (x, y) { return y[by] - x[by]; });
+            return out;
+        }
+        var deduped = worstPerPair(findings, 'excess');
         return {
             clips: names,
             samples: samples,
             poses: covered,
             findings: deduped,
-            fresh: deduped.filter(function (f) { return f.fresh; }).length,
+            explained: worstPerPair(explained, 'depth'),
+            fresh: deduped.filter(function (f) { return f.kind === 'overlap' && f.fresh; }).length,
+            detached: deduped.filter(function (f) { return f.kind === 'detached'; }).length,
             approx: Object.keys(approx)
         };
+    }
+
+    /** How close two clear boxes must be at rest to count as touching for the detach check. */
+    var CONTACT_EPS = 1.0e-3;
+
+    /** b's orientation in a's frame: column j is b's axis j, expressed on a's axes. */
+    function relOrient(a, b) {
+        var m = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+        for (var i = 0; i < 3; i++) for (var j = 0; j < 3; j++) m[i][j] = dot(a.axes[i], b.axes[j]);
+        return m;
+    }
+    function transpose(m) { return [col(m, 0), col(m, 1), col(m, 2)]; }
+
+    /**
+     * What the rest pose knew about a touching pair, kept for the joint allowance: their relative
+     * orientation, the contact normal (SAT's axis, on a's axes), and the halves they had at rest -
+     * a scale channel changes the halves at a sample, and it is the resting limb that reaches.
+     */
+    function restFrame(a, b) {
+        var hit = sat(a, b);
+        return {
+            rel: relOrient(a, b),
+            normal: hit.axis ? [dot(hit.axis, a.axes[0]), dot(hit.axis, a.axes[1]), dot(hit.axis, a.axes[2])] : null,
+            ha: a.half.slice(),
+            hb: b.half.slice()
+        };
+    }
+
+    /**
+     * The depth a rotation about a joint on the contact face explains, for a pair that touched at
+     * rest: `sinkPx + reach * sin(angle)`. The rotation is the pair's RELATIVE turn since rest
+     * (so a body that bobs while its leg hangs still is the same swing as the reverse); the swing
+     * direction is in the contact plane, perpendicular to both the contact normal and the turn's
+     * axis; `reach` is the SMALLER box's extent along it. A twist about the contact normal reaches
+     * nothing, and a half turn has no axis worth naming and no joint swings that far.
+     */
+    function jointAllowance(a, b, rest, sinkPx) {
+        var delta = mulM(relOrient(a, b), transpose(rest.rel));
+        var trace = delta[0][0] + delta[1][1] + delta[2][2];
+        var angle = Math.acos(Math.max(-1, Math.min(1, (trace - 1) / 2)));
+        var out = { degrees: angle * 180 / Math.PI, reach: 0, allowed: sinkPx };
+        if (angle < 1.0e-6 || !rest.normal) return out;
+        var k = [delta[2][1] - delta[1][2], delta[0][2] - delta[2][0], delta[1][0] - delta[0][1]];
+        var kl = length(k);
+        if (kl < 1.0e-9) return out;
+        var s = cross(rest.normal, scale(k, 1 / kl));
+        var sl = length(s);
+        if (sl < 1.0e-9) return out;
+        s = scale(s, 1 / sl);
+        var ea = Math.abs(s[0]) * rest.ha[0] + Math.abs(s[1]) * rest.ha[1] + Math.abs(s[2]) * rest.ha[2];
+        var eb = 0;
+        for (var i = 0; i < 3; i++) eb += Math.abs(dot(col(rest.rel, i), s)) * rest.hb[i];
+        out.reach = Math.min(ea, eb);
+        out.allowed = sinkPx + out.reach * Math.sin(angle);
+        return out;
     }
 
     // -- the report -----------------------------------------------------------------------------
@@ -1590,21 +1800,30 @@
         return map;
     }
 
-    function verifyModel(converted, pixels, sinkPx, eps, previous) {
+    /**
+     * UV findings that are NOTES, not failures: a mirrored pair is usually deliberate, a face
+     * painted in part is a face mid-work, and a faint texel already shows up as the hole it makes
+     * in the face it sits in (or sits outside every face and harms nothing).
+     */
+    var NOTE_KINDS = ['shared', 'partial', 'faint'];
+
+    function verifyModel(converted, pixels, sinkPx, eps, nearPx, previous) {
         var boxes = worldBoxes(converted.model);
-        var pairs = pairTable(boxes, sinkPx, eps);
-        var animated = animatedFindings(converted.model, pairs, sinkPx);
+        var pairs = pairTable(boxes, sinkPx, eps, nearPx);
+        var animated = animatedFindings(converted.model, boxes, pairs, sinkPx);
 
         var uv = uvAudit(boxes, converted.model.texture, pixels, previousFacesOf(previous));
-        var counts = { overlap: 0, coplanar: 0, sunk: 0, clear: 0 };
+        var counts = { overlap: 0, coplanar: 0, near: 0, sunk: 0, clear: 0 };
         pairs.forEach(function (p) { counts[p.kind]++; });
         // `shared` and `partial` are NOTES: a mirrored pair is usually deliberate, and a face
         // painted in part is a face mid-work. Everything else in the UV list is a finding.
         var failures = counts.overlap
             + counts.coplanar
-            + uv.findings.filter(function (f) { return f.kind !== 'shared' && f.kind !== 'partial'; }).length
+            + counts.near
+            + uv.findings.filter(function (f) { return NOTE_KINDS.indexOf(f.kind) < 0; }).length
             + (uv.paint.ok === false ? 1 : 0)
-            + animated.fresh;
+            + animated.fresh
+            + animated.detached;
 
         return {
             ok: failures === 0,
@@ -1614,6 +1833,7 @@
             counts: counts,
             failures: failures,
             sinkPx: sinkPx,
+            nearPx: nearPx,
             table: pairs,
             uv: uv.findings,
             paint: uv.paint,
@@ -1648,11 +1868,16 @@
             } else if (row.kind === 'coplanar') {
                 problems.push('coplanar ' + row.a + ' | ' + row.b + ' ' + row.plane.faces + ' '
                     + row.plane.area.toFixed(1) + 'px2 (z-fights in game)');
+            } else if (row.kind === 'near') {
+                problems.push('near ' + row.a + ' | ' + row.b + ' ' + row.plane.faces + ' '
+                    + row.plane.offset.toFixed(3) + 'px apart over ' + row.plane.area.toFixed(1)
+                    + 'px2 (z-fights at distance: sink it >= 0.5px or lift it clear)');
             }
         });
         report.uv.forEach(function (f) {
-            var line = f.kind + ' ' + f.a + (f.b ? ' | ' + f.b : '') + (f.detail ? ' ' + f.detail : '');
-            if (f.kind === 'shared' || f.kind === 'partial') notes.push(line); else problems.push(line.trim());
+            var line = [f.kind, f.a, f.b ? '| ' + f.b : '', f.detail || '']
+                .filter(function (s) { return s; }).join(' ');
+            if (NOTE_KINDS.indexOf(f.kind) >= 0) notes.push(line); else problems.push(line);
         });
         if (report.paint.ok === false) {
             problems.push('paint ' + report.paint.opaque + ' opaque px vs ' + report.paint.painted
@@ -1661,9 +1886,14 @@
             notes.push('no texture pixels to check paint against');
         }
         (report.animated.findings || []).forEach(function (f) {
-            if (f.fresh) {
+            if (f.kind === 'detached') {
+                problems.push('detached ' + f.clip + ' @' + f.t + ' ' + f.a + ' | ' + f.b + ' '
+                    + f.depth.toFixed(2) + 'px gap (touching at rest - is the pivot at the joint?)');
+            } else if (f.fresh) {
                 problems.push('animated ' + f.clip + ' @' + f.t + ' ' + f.a + ' | ' + f.b + ' '
-                    + f.depth.toFixed(2) + 'px');
+                    + f.depth.toFixed(2) + 'px' + (f.allowed > report.sinkPx
+                        ? ' (a ' + Math.round(f.swing) + ' deg joint swing explains ' + f.allowed.toFixed(2) + ')'
+                        : ''));
             }
         });
         (report.warnings || []).forEach(function (w) { notes.push(w); });
@@ -1693,14 +1923,16 @@
                 ? a.clips.length + ' clip(s) over ' + a.samples + ' sampled poses'
                 : 'rest pose only'));
         lines.push('  ' + report.counts.overlap + ' overlap, ' + report.counts.coplanar
-            + ' coplanar, ' + report.counts.sunk + ' sunk (<=' + report.sinkPx + 'px), '
+            + ' coplanar, ' + report.counts.near + ' near (<=' + report.nearPx + 'px apart), '
+            + report.counts.sunk + ' sunk (<=' + report.sinkPx + 'px), '
             + report.counts.clear + ' clear');
         lines.push('');
         lines.push('  ' + pad('PAIR', 46) + pad('KIND', 10) + pad('DEPTH', 9) + pad('GAP', 9) + 'PLANE');
         report.table.forEach(function (row) {
             lines.push('  ' + pad(row.a + ' | ' + row.b, 46) + pad(row.kind, 10)
                 + pad(row.depth.toFixed(3), 9) + pad(row.gap.toFixed(3), 9)
-                + (row.plane ? row.plane.faces + ' ' + row.plane.area.toFixed(2) + 'px2' : ''));
+                + (row.plane ? row.plane.faces + ' ' + row.plane.area.toFixed(2) + 'px2'
+                    + (row.kind === 'near' ? ' ' + row.plane.offset.toFixed(3) + 'px apart' : '') : ''));
         });
         lines.push('');
         if (report.uv.length) {
@@ -1715,9 +1947,11 @@
             lines.push('  paint: ' + report.paint.painted + 'px of face area; no texture pixels'
                 + ' available to compare against');
         } else {
-            lines.push('  paint: ' + report.paint.opaque + ' opaque px vs ' + report.paint.painted
+            lines.push('  paint: ' + report.paint.opaque + ' opaque px (alpha >= ' + ALPHA_MIN
+                + ', the game\'s cutout) vs ' + report.paint.painted
                 + ' px of face area — ' + (report.paint.ok ? 'every face landed'
-                    : 'MISMATCH, so a face is unpainted or double-mapped'));
+                    : 'MISMATCH, so a face is unpainted or double-mapped')
+                + (report.paint.faint ? '; ' + report.paint.faint + ' faint texel(s) the game discards' : ''));
             var fs = report.faces || [];
             var full = fs.filter(function (f) { return f.complete; }).length;
             var empty = fs.filter(function (f) { return f.area > 0 && f.painted === 0; });
@@ -1739,14 +1973,31 @@
         }
         if (a.clips.length) {
             lines.push('  animated (' + a.clips.join(', ') + ') — keyframes AND their midpoints,'
-                + ' overlap only; coplanarity is a rest-pose finding:');
+                + ' overlap and detachment only; coplanarity is a rest-pose finding:');
             if (!a.findings.length) {
-                lines.push('    no pair overlaps at any sampled pose');
+                lines.push('    no pair overlaps or detaches at any sampled pose');
             } else {
                 a.findings.forEach(function (f) {
                     lines.push('    ' + pad(f.clip + ' @' + f.t, 18)
-                        + pad(f.a + ' | ' + f.b, 40) + f.depth.toFixed(3) + 'px'
-                        + (f.fresh ? '  ONLY WHEN ANIMATED' : '  (also overlaps at rest)'));
+                        + pad(f.a + ' | ' + f.b, 40)
+                        + (f.kind === 'detached'
+                            ? f.depth.toFixed(3) + 'px gap  DETACHED (touching at rest)'
+                            : f.depth.toFixed(3) + 'px'
+                                + (f.allowed > report.sinkPx
+                                    ? ' (a ' + Math.round(f.swing) + ' deg joint swing explains '
+                                        + f.allowed.toFixed(2) + ')'
+                                    : '')
+                                + (f.fresh ? '  ONLY WHEN ANIMATED' : '  (also overlaps at rest)')));
+                });
+            }
+            if (a.explained && a.explained.length) {
+                lines.push('    buried past ' + report.sinkPx + 'px but no deeper than the joint swing'
+                    + ' reaches (in contact at rest; not findings):');
+                a.explained.forEach(function (f) {
+                    lines.push('      ' + pad(f.clip + ' @' + f.t, 16)
+                        + pad(f.a + ' | ' + f.b, 40)
+                        + f.depth.toFixed(3) + 'px <= ' + f.allowed.toFixed(2) + ' at '
+                        + Math.round(f.swing) + ' deg');
                 });
             }
             if (a.approx.length) {
@@ -1775,6 +2026,10 @@
         // the other side of the bridge.
         var converted = convertDoc(docFor(opts), opts);
         var target = opts.target || 'live';
+        // Three values; an unknown one used to push nothing and answer ok (section 13).
+        if (TARGETS.indexOf(target) < 0) {
+            throw new Error('target must be one of ' + TARGETS.join(' | ') + ', not ' + JSON.stringify(opts.target));
+        }
         // A texture whose Blockbench name differs from its sanitized asset name would land beside
         // what the JSON references. Renaming is not this plugin's business, so it is refused with
         // the fix rather than pushed into a mismatch that renders as missingno.
@@ -1783,6 +2038,16 @@
                 + ' rename it to "' + converted.texture.id + '" in Blockbench (lower case, and'
                 + ' a-z 0-9 . _ - only)');
         }
+        // THE GATE. Until 0.6.0 a push never ran the check: a model with three coplanar pairs was
+        // converted, staged and photographed, and the loop relied on the agent obeying "fix what
+        // it names" on the reply before. The check is cheap and the geometry is already in hand,
+        // so a push with findings is refused WITH the check's own lines, and `force:"<reason>"`
+        // (a string, the loop kit's convention: the reason is the record) pushes anyway and says
+        // so in the reply. The panel's button forces, because a person at the panel is judging by
+        // eye and the button has nowhere to type a reason.
+        // It runs AFTER the configuration refusals below (target, texture name, source root, the
+        // sync plugin, the bridge): those are the surprises, and the check's lines are something
+        // the author has already been shown on every editing reply.
         var live = target === 'live' || target === 'both';
         var name = projectNameFor(opts);
         // Both destinations settled before a byte moves - where on disk, and WHICH GAME - with the
@@ -1794,6 +2059,19 @@
                 + ' mcptoolkitPush() rather than re-implementing the transport');
         }
         var bridge = live ? bridgeFor(opts, name) : null;
+        var gate = null;
+        if (opts.check !== false) {
+            var gatePixels = opts.pixels || (converted.texture ? pixelsOf(converted.texture.name) : null);
+            var gateReport = verifyModel(converted, gatePixels,
+                typeof opts.sink === 'number' ? opts.sink : settings.sinkPx,
+                typeof opts.eps === 'number' ? opts.eps : settings.coplanarEps,
+                typeof opts.near === 'number' ? opts.near : settings.nearPx, null);
+            gate = checkContract(gateReport);
+            if (gate.problems > 0 && typeof opts.force !== 'string') {
+                throw new Error('not pushed: the check has ' + gate.problems + ' problem(s) -'
+                    + ' fix them, or pass force:"<why>" to push anyway\n' + gate.text);
+            }
+        }
         var pushOpts = {
             bridge: bridge,
             namespace: converted.namespace,
@@ -1823,6 +2101,14 @@
                 : null,
             warnings: converted.warnings.slice()
         };
+        if (gate) {
+            summary.check = { problems: gate.problems, notes: gate.notes, text: gate.text };
+            if (gate.problems > 0) {
+                summary.forced = opts.force;
+                summary.warnings.push('pushed with ' + gate.problems + ' problem(s) the check'
+                    + ' named, forced: ' + opts.force);
+            }
+        }
 
         return globalThis.mcptoolkitPush(pushOpts).then(function (push) {
             if (!push.ok) return { ok: false, error: push.error, model: summary.model };
@@ -1852,12 +2138,130 @@
                 summary.parse = staged.parse;
                 if (staged.parse_error) summary.parse_error = staged.parse_error;
                 return summary;
+            }, function (e) {
+                // A stage that fails after a push that LANDED answers ok:false WITH what landed
+                // (section 13): the model and texture are in the live pack whether or not a body
+                // wears them, and a reply that hid that sent authors pushing again.
+                return Object.assign({}, summary, { ok: false, error: 'pushed but not staged: ' + String(e && e.message || e),
+                    staged: false });
             });
         });
     }
 
+    /**
+     * The stage slot. `session` is what `risky_eval` hands over as SESSION (bridge plugin 0.11.0):
+     * with one, and no explicit tag, the slot is per session, so two sessions pushing a preview
+     * into one game stop overwriting each other's entity (section 13). Without one the shipped
+     * default stands, as it did.
+     */
+    function tagFor(opts) {
+        if (opts && opts.tag) return opts.tag;
+        var base = settings.tag || DEFAULTS.tag;
+        if (opts && opts.session) return base + '-' + String(opts.session).replace(/[^A-Za-z0-9_.-]+/g, '_');
+        return base;
+    }
+
+    /** The tags of the last flipbook row this window stood up, so `clear` can sweep them. */
+    var lastFlipbook = [];
+
+    /** Clear the named tags one by one (null = everything), tolerating a tag that is already gone. */
+    function sweepTags(bridge, tags) {
+        if (!tags) return call(bridge, 'stage_entity', { op: 'clear' });
+        var cleared = 0;
+        var chain = Promise.resolve();
+        tags.forEach(function (tag) {
+            chain = chain.then(function () {
+                return call(bridge, 'stage_entity', { op: 'clear', tag: tag })
+                    .then(function (r) { cleared += Number(r && r.cleared) || 0; }, function () { /* already gone */ });
+            });
+        });
+        return chain.then(function () { lastFlipbook = []; return { cleared: cleared, tags: tags }; });
+    }
+
+    /**
+     * The row of frozen poses. `push` is doPush's summary (the model is in the game by now);
+     * `opts.clip` names the clip (or the model's only one), `opts.times` the seconds (default
+     * `frames` evenly spaced over the clip, 4), `opts.spacing` the gap between copies in blocks.
+     */
+    function flipbook(opts, push) {
+        var converted = convertDoc(docFor(opts), opts);
+        var bridge = bridgeFor(opts, projectNameFor(opts));
+        var clips = Object.keys(converted.model.animations || {});
+        var clip = opts.clip || (clips.length === 1 ? clips[0] : null);
+        if (!clip) {
+            throw new Error(clips.length
+                ? 'flipbook needs `clip`: this model has ' + clips.length + ' clips (' + clips.join(', ') + ')'
+                : 'flipbook needs a clip and this model has none - author one first (the animation tool), then flipbook it');
+        }
+        if (!converted.model.animations || !converted.model.animations[clip]) {
+            throw new Error('no clip named "' + clip + '" (this model has: ' + clips.join(', ') + ')');
+        }
+        var length = Number(converted.model.animations[clip].length) || 0;
+        var times;
+        if (Array.isArray(opts.times) && opts.times.length) {
+            times = opts.times.map(Number);
+        } else {
+            var n = Math.max(2, Math.min(12, Number(opts.frames) || 4));
+            times = [];
+            for (var i = 0; i < n; i++) times.push(num(length * i / n));
+        }
+        if (times.length > 12) throw new Error('flipbook takes at most 12 times');
+        if (times.some(function (t) { return !(t >= 0); })) throw new Error('flipbook times are seconds from the start of the clip, all >= 0');
+        var bounds = boundsOf(worldBoxes(converted.model));
+        var spacing = typeof opts.spacing === 'number' ? opts.spacing : num(bounds.size[0] + 0.5);
+        var base = tagFor(opts);
+        var tags = times.map(function (_, i) { return base + '-fb' + i; });
+        var stages = [];
+        // The session's playing preview stands where frame 0 will: sweep it and the last row first.
+        return sweepTags(bridge, [base].concat(lastFlipbook)).then(function () {
+            var chain = Promise.resolve();
+            times.forEach(function (t, i) {
+                chain = chain.then(function () {
+                    var so = { tag: tags[i], clip: clip, clip_time: t, replace: true };
+                    if (opts.dimension) so.dimension = opts.dimension;
+                    if (i === 0) {
+                        if (opts.pos) so.pos = opts.pos;
+                        if (typeof opts.yaw === 'number') so.yaw = opts.yaw;
+                    } else {
+                        var p0 = stages[0].pos;
+                        if (!p0 || typeof p0.x !== 'number') throw new Error('the game did not say where frame 0 stands, so the row cannot be laid out');
+                        so.pos = { x: num(p0.x + i * spacing), y: p0.y, z: p0.z };
+                        if (typeof stages[0].yaw === 'number') so.yaw = stages[0].yaw;
+                    }
+                    return stageIt(bridge, converted.modelId, bounds.size, so).then(function (r) {
+                        stages.push({ t: t, tag: tags[i], pos: r.pos || null, yaw: r.yaw, parse: r.parse, parse_error: r.parse_error || null });
+                    });
+                });
+            });
+            return chain;
+        }).then(function () {
+            lastFlipbook = tags.slice();
+            var p0 = stages[0].pos, pn = stages[stages.length - 1].pos;
+            var look = null, render = null;
+            if (p0 && pn) {
+                var half = bounds.size[0] / 2 + 0.5;
+                look = {
+                    min: { x: Math.floor(Math.min(p0.x, pn.x) - half), y: Math.floor(p0.y), z: Math.floor(p0.z - half) },
+                    max: { x: Math.floor(Math.max(p0.x, pn.x) + half), y: Math.ceil(p0.y + bounds.size[1]), z: Math.floor(p0.z + half) }
+                };
+                // The row faces whoever asked for it (stage_entity's default yaw); a camera that looks
+                // the other way stands in front of it. render's yaw is -180..180.
+                var facing = typeof stages[0].yaw === 'number' ? stages[0].yaw + 180 : 0;
+                facing = ((facing + 180) % 360 + 360) % 360 - 180;
+                render = { look_at: look, yaw: num(facing), pitch: 12, inline: true };
+            }
+            var bad = stages.filter(function (st) { return st.parse !== 'ok'; });
+            return {
+                ok: true, model: converted.modelId, clip: clip, length: length, times: times,
+                pushed: push.pushed, frames: stages, look_at: look, render: render,
+                parse: bad.length ? bad[0].parse : 'ok',
+                note: 'a row of frozen poses left to right in time order; render {look_at, yaw, pitch, inline:true} photographs it; {action:"clear"} sweeps it'
+            };
+        });
+    }
+
     function stageIt(bridge, modelId, size, opts) {
-        var args = { op: 'stage', model: modelId, size: size, tag: opts.tag || settings.tag };
+        var args = { op: 'stage', model: modelId, size: size, tag: tagFor(opts) };
         if (opts.pos) args.pos = opts.pos;
         if (opts.dimension) args.dimension = opts.dimension;
         if (typeof opts.yaw === 'number') args.yaw = opts.yaw;
@@ -1934,6 +2338,7 @@
                     var report = verifyModel(subject, pixels,
                         typeof opts.sink === 'number' ? opts.sink : settings.sinkPx,
                         typeof opts.eps === 'number' ? opts.eps : settings.coplanarEps,
+                        typeof opts.near === 'number' ? opts.near : settings.nearPx,
                         opts.previous || null);
                     report.text = reportText(report);
                     lastReport = report;
@@ -1945,12 +2350,31 @@
                     // editing call's reply, the count a save gate reads, and the long form. A loop
                     // file's `"eval": "mcptoolkitEntity({action:'check', previous: __previous})"`
                     // is the whole hook; `previous` is what makes `regrown` a diff and not a memory.
-                    var cSubject = convertDoc(docFor(opts), opts);
+                    //
+                    // A CHECK ANSWERS IN THE CONTRACT EVEN WHEN THERE IS NOTHING TO CHECK. The
+                    // first live loop run (2026-09-13) fired this after `project op:new` and after
+                    // `op:close`, and both came back `{ok:false, error}` - which the shim can only
+                    // report as `check "entity" could not run`, on the very reply that created the
+                    // project. An empty project and a window with nothing open are the ordinary
+                    // states either side of a unit, not failures of the checker: they are a
+                    // zero-problem report with one note. Anything else convert refuses (a per-face
+                    // UV cube, a non-cube element) IS a finding, and is reported as one problem
+                    // carrying convert's own sentence rather than as a checker that could not run.
+                    var cSubject;
+                    try { cSubject = convertDoc(docFor(opts), opts); }
+                    catch (e) {
+                        var cMsg = String(e.message || e);
+                        var cEmpty = /nothing to export|project is null|no project is open/.test(cMsg);
+                        return done(cEmpty
+                            ? { text: 'verify: nothing to check yet (' + cMsg.split(' — ')[0] + ')', problems: 0, notes: 1, full: cMsg }
+                            : { text: 'verify: 1 problem(s) need a decision\n  ! ' + cMsg, problems: 1, notes: 0, full: cMsg });
+                    }
                     var cPixels = opts.pixels
                         || (cSubject.texture ? pixelsOf(cSubject.texture.name) : null);
                     var cReport = verifyModel(cSubject, cPixels,
                         typeof opts.sink === 'number' ? opts.sink : settings.sinkPx,
                         typeof opts.eps === 'number' ? opts.eps : settings.coplanarEps,
+                        typeof opts.near === 'number' ? opts.near : settings.nearPx,
                         opts.previous || null);
                     cReport.text = reportText(cReport);
                     lastReport = cReport;
@@ -1971,8 +2395,21 @@
                         .then(function (r) { return done(Object.assign({ ok: true }, r)); })
                         .catch(function (e) { return done({ ok: false, error: String(e.message || e) }); });
                 }
+                case 'flipbook':
+                    // A CLIP IS JUDGED AS A ROW OF FROZEN POSES, IN THE GAME, IN ONE PICTURE. A
+                    // playing clip photographed once is one random phase; N stages of the same model
+                    // frozen at N times, side by side, is the whole clip in a single `render` -
+                    // "a contact sheet is a grid of stages, not a mode", composed by the world
+                    // itself. Pushes first (the sheet and geometry the author just edited), then the
+                    // row; the reply carries the block box to render and the yaw that faces it.
+                    return doPush(Object.assign({}, opts, { stage: false })).then(function (push) {
+                        if (!push.ok) return push;
+                        return flipbook(opts, push);
+                    }).then(done).catch(function (e) { return done({ ok: false, error: String(e.message || e) }); });
                 case 'clear':
-                    return call(bridgeFor(opts, projectNameFor(opts)), 'stage_entity', opts.tag ? { op: 'clear', tag: opts.tag } : { op: 'clear' })
+                    // With a session and no tag, clear THIS session's slot, not everybody's - and the
+                    // row its last flipbook stood up, which is that session's too.
+                    return sweepTags(bridgeFor(opts, projectNameFor(opts)), (opts.tag || opts.session) ? [tagFor(opts)].concat(lastFlipbook) : null)
                         .then(function (r) { return done(Object.assign({ ok: true }, r)); })
                         .catch(function (e) { return done({ ok: false, error: String(e.message || e) }); });
                 case 'list':
@@ -2053,6 +2490,10 @@
         field('Model id', 'model', 'assets/<namespace>/preview/<id>.json');
         field('Namespace', 'namespace', 'staging needs "mcptoolkit"; anything else is a promotion');
         field('Source root', 'sourceRoot', 'this project\'s src/main/resources, for Promote');
+        // The field the panel MODELLED and never rendered (section 13): a person at the keyboard
+        // has no GAME to hand over, and was being told to pass one inside risky_eval, which they
+        // cannot do. Saved per project on the next Push, like the source root beside it.
+        field('Game bridge', 'bridge', 'http://127.0.0.1:<port> of the game this project drives (`ping` in the agent session says which); remembered per project');
 
         var out = document.createElement('pre');
         out.textContent = lastReport ? lastReport.text : 'No verify run yet.';
@@ -2091,7 +2532,7 @@
         var buttons = document.createElement('div');
         buttons.className = 'mte-buttons';
         [
-            ['Push & Stage', function () { run({ action: 'push' }, 'Push'); }],
+            ['Push & Stage', function () { run({ action: 'push', force: 'pushed from the panel' }, 'Push'); }],
             ['Verify', function () { run({ action: 'verify' }, 'Verify'); }],
             ['Promote to source', function () { run({ action: 'promote' }, 'Promote'); }],
             ['Clear stages', function () { run({ action: 'clear' }, 'Clear'); }]
@@ -2108,7 +2549,10 @@
         note.style.opacity = '.75';
         note.textContent = 'Verify covers the rest pose in full, and every clip at each keyframe'
             + ' and the midpoints between them — where a swing passes through a torso (design'
-            + ' §9.3). Sampled poses are checked for OVERLAP; coplanarity stays a rest check.';
+            + ' §9.3). Sampled poses are checked for OVERLAP past what a joint swing explains, and'
+            + ' for DETACHMENT; coplanar and near faces stay rest checks. A headless push refuses'
+            + ' while the check has problems; this button'
+            + ' pushes anyway and says so.';
         root.appendChild(note);
         root.appendChild(out);
     }
@@ -2139,11 +2583,13 @@
         description: 'Author entity geometry in Blockbench and judge it in the running game: one'
             + ' push converts the project to the toolkit\'s interchange format, syncs it with its'
             + ' texture, and stages a preview entity wearing it. Also runs the geometry check'
-            + ' battery (overlap, coplanarity, UV, and every clip at its keyframes'
-            + ' and the midpoints between them) and promotes into a mod\'s resources.'
+            + ' battery (overlap, coplanar and near-coplanar faces, UV, paint at the game\'s alpha'
+            + ' cutout, and every clip at its keyframes and the midpoints between them for overlap'
+            + ' past what a joint swing explains, and for detachment;'
+            + ' a push refuses while it has problems) and promotes into a mod\'s resources.'
             + ' Headless API: mcptoolkitEntity(opts).',
         icon: 'view_in_ar',
-        version: '0.3.0',
+        version: '0.7.0',
         variant: 'desktop',
         onload: function () {
             globalThis.mcptoolkitEntity = headless;

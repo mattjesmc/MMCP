@@ -125,6 +125,81 @@ class SurfacesTest {
     }
 
     @Test
+    void aNameWithACapitalLetterIsServedInLowerCaseRatherThanBeingUnreachable() {
+        // Uppercase IS a legal path segment, so isLegalName lets it through — and resolve() looks up
+        // in lower case, so a key stored verbatim installed, listed, and then 404'd at every URL
+        // including the one it was named for. The fold happens once, at put.
+        Surfaces s = withDeclared("""
+            { "surfaces": { "Build": { "keep": ["set_blocks"] } } }
+            """);
+        assertNull(s.all().get("Build"), "stored as written is stored where nothing can find it");
+        assertNotNull(s.all().get("build"));
+        assertNotNull(s.resolve("build"), "/mcp/build");
+        assertNotNull(s.resolve("Build"), "/mcp/Build — resolve folds the lookup too");
+        assertEquals("build", s.resolve("build").name());
+        assertTrue(s.names().contains("build"), "and it is listed under the name it answers to");
+    }
+
+    @Test
+    void theDefaultSurfaceIsFoundWhateverCaseItWasWrittenIn() {
+        // mcp.surface=Build in mcptoolkit.properties, against a file declaring "Build".
+        Surfaces s = withDeclared("""
+            { "surfaces": { "Build": { "keep": ["set_blocks"] } } }
+            """, "Build");
+        assertEquals("build", s.defaultName(), "and /mcp serves it, rather than falling back to full");
+    }
+
+    @Test
+    void aBaseNamedInAnotherCaseStillResolves() {
+        Surfaces s = withDeclared("""
+            { "surfaces": { "narrow": { "base": "Observe", "keep": ["get_surface"] } } }
+            """);
+        McpSurface narrow = s.resolve("narrow");
+        assertNotNull(narrow, "a base is a surface name too, and surface names fold");
+        assertTrue(narrow.serves(READ));
+        assertFalse(narrow.serves(WRITE), "the observe base still governs");
+    }
+
+    // ---- legality is declared, not spelled -----------------------------------
+
+    @Test
+    void aSurfaceCalledSurvivalIsNotPlayerLegalJustForBeingCalledThat() {
+        // The name travels to BridgeServer.execute in the parameter the shim fills with its PROFILE,
+        // and ToolContext.legal() used to be a string comparison against this exact word. An
+        // operator naming a surface after the game mode they play was silently asking for
+        // knowledge-masked check_path and audit rows withheld from get_events.
+        McpSurface s = declaredSurface("""
+            { "surfaces": { "survival": { "keep": ["check_path"] } } }
+            """, "survival");
+        assertFalse(s.legal(), "the name is an address, not a role");
+    }
+
+    @Test
+    void aSurfaceMaySayItIsPlayerLegalOnPurpose() {
+        // And there had to be a way to ASK for it: before the flag, the only way to get a
+        // player-legal second-door session was to name the surface that one string by coincidence.
+        assertTrue(declaredSurface("""
+            { "surfaces": { "body": { "legal": true } } }
+            """, "body").legal());
+        assertFalse(declaredSurface("""
+            { "surfaces": { "body": { "legal": false } } }
+            """, "body").legal());
+    }
+
+    @Test
+    void legalityIsInheritedFromTheBaseLikeEverythingElseAboutASurface() {
+        Surfaces s = withDeclared("""
+            { "surfaces": {
+                "body": { "legal": true, "keep": ["check_path", "get_events"] },
+                "narrower": { "base": "body", "keep": ["check_path"] }
+            } }
+            """);
+        assertTrue(s.resolve("narrower").legal(),
+            "a slice of a player-legal surface is a player-legal surface");
+        assertFalse(s.resolve("full").legal(), "and nothing else acquires it");
+    }
+
+    @Test
     void malformedJsonLeavesTheBuiltInsAlone() {
         Map<String, McpSurface> all = load("{ not json at all ");
         assertEquals(3, all.size());
@@ -228,6 +303,29 @@ class SurfacesTest {
         Map<String, McpSurface> all = new LinkedHashMap<>(Surfaces.load(null, "full").all());
         Surfaces.readInto(all, json, "test");
         return all;
+    }
+
+    /** {@link #load} as an installed-shaped {@link Surfaces}, so resolve/names/defaultName are testable. */
+    private static Surfaces withDeclared(final String json) {
+        return withDeclared(json, "full");
+    }
+
+    private static Surfaces withDeclared(final String json, final String defaultName) {
+        try {
+            Path file = Files.createTempFile("surfaces", ".json");
+            Files.writeString(file, json);
+            Surfaces s = Surfaces.load(file, defaultName);
+            Files.deleteIfExists(file);
+            return s;
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static McpSurface declaredSurface(final String json, final String name) {
+        McpSurface s = withDeclared(json).resolve(name);
+        assertNotNull(s, name);
+        return s;
     }
 
     private static McpSurface builtin(final String name) {

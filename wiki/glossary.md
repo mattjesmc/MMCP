@@ -27,6 +27,18 @@ client and HTTP to the bridge. It holds everything that is per-session policy: p
 image budget, the loop file, and the Blockbench upstream. Your agent never talks to the game
 directly.
 
+**Daemon** (`mmcpd`, `mcp-server/daemon.mjs`) — one long-lived process per machine, at
+`127.0.0.1:25500`, that hosts a shim for every project. Registration becomes a URL
+(`/mcp/<project>?profile=<p>`) and your client spawns nothing. It owns what used to be settled per
+session: which registered game is which, the session table, where memory lives, and which
+Blockbench instance a session works in. It does not replace the shim — it spawns one per session,
+because each shim keeps its layers' state in module scope.
+
+**The game's own door** — `http://127.0.0.1:<port>/mcp`, an MCP server inside the jar since
+0.146.0. No Node and nothing to install; `/mcp/<surface>` picks the tool slice. It exists only
+while the game does and the shim-side layers (memory, Blockbench, the loop kit) are not behind it.
+`/mmcp mcp` in game prints its address.
+
 **Manifest** — what the bridge serves at `GET /tools`: every tool, its schema, its mechanism and its
 execution context. **The manifest is the truth about tools**; every table in every document, this
 wiki included, is a summary of it.
@@ -84,6 +96,20 @@ winning until cleared.
 **Promotion** — moving a file from a live pack into your mod's source tree. It rides on the *clear*
 (`clear_assets {promote}`) because the step people forget is the clear, and an override left behind
 keeps beating the file you just wrote. Copy first, delete second, always.
+
+**Disk feed** — the daemon watching a registered project's `src/`, so **a file you save is landed
+in the running game with no tool called**: an asset push, a data push, a `ui_doc refresh` or a
+compile-and-swap, picked by what you wrote and batched with whatever went quiet alongside it. One
+of three feeds in the co-editing contract (disk, and later your editor's buffer and its undo
+stack); it is the one that is built.
+
+**Edit event / change feed** — the row every landed change produces, readable two ways: on the
+daemon (`daemon.mjs changes --follow`, `GET /changes`) and inside the game as an `edit` event in
+`get_events`, so every session on that game sees it. `live.result` is the verdict — `swapped`,
+`refused` (identical bytes, or a tool's own refusal), `not-yet` (does not compile yet),
+`pending-rebuild` (structural — go and rebuild), `none` (game down, or nothing lands that kind).
+`record_edit` is the privileged tool that writes one, and the only way into the stream from outside
+the game.
 
 **Hotswap** — redefining a loaded class's method bodies in the running JVM. Mod classes only; no
 added or removed fields, methods or classes. A mixin-transformed or Minecraft class redefined this way

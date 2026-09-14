@@ -197,6 +197,11 @@ was actually built and then moved out of this repository:
   the jar anyway.
 - **The datapack format is the file format.** Do not invent an intermediate one.
 - **Headless APIs never reject** — return `{ok: false, error}` so a caller needs no try/catch.
+- **Write the source tree rather than the live pack**, where you have the choice. With the daemon
+  running, a file your editor saves under the project's `src/` is landed in the game for you, and
+  it is durable — a live push is a preview somebody has to remember to promote later. And if your
+  editor lands a change *itself*, announce it with `record_edit` so every other session on that
+  game learns of it from the event stream rather than from nothing.
 
 ## Testing your extension
 

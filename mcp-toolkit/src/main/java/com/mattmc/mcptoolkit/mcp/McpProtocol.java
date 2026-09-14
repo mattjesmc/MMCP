@@ -45,9 +45,16 @@ public final class McpProtocol {
      */
     public static final String FALLBACK_PROTOCOL_VERSION = "2025-03-26";
 
-    /** Dispatches one tool call and answers the bridge's {@code {ok,result}} / {@code {ok,error}}. */
+    /**
+     * Dispatches one tool call and answers the bridge's {@code {ok,result}} / {@code {ok,error}}.
+     *
+     * <p>The whole {@link McpSurface} goes across rather than its name, and that is the fix for a
+     * defect rather than a tidy-up: the name was the only thing the dispatcher learned, it arrived
+     * in the parameter the shim fills with its PROFILE, and one particular name therefore carried
+     * behaviour nobody declared. A surface has properties; hand over the surface.
+     */
     public interface Invoker {
-        JsonObject call(String tool, JsonObject args, @Nullable String session, @Nullable String surface);
+        JsonObject call(String tool, JsonObject args, @Nullable String session, McpSurface surface);
     }
 
     private final Supplier<Collection<ToolDef>> registry;
@@ -201,7 +208,7 @@ public final class McpProtocol {
                 + "connected to; reconnect to /mcp/full for everything this game registers, or ask "
                 + "the person running the game which surfaces it declares (/mmcp mcp).");
         }
-        JsonObject envelope = invoker.call(name, args, conn.toolkitSession, conn.surface.name());
+        JsonObject envelope = invoker.call(name, args, conn.toolkitSession, conn.surface);
         return McpContent.fromEnvelope(envelope);
     }
 

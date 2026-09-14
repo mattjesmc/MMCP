@@ -213,6 +213,11 @@ const SPEC = {
     // envelope check on exactly that mismatch: the read-only shape of a verb does not make the
     // verb an observe read.
     "wm_session_tag", "wm_perturb",
+    // The daemon's write into the event stream (0.156.0, HOST_DESIGN.md section 4.5): it APPENDS a
+    // row every session on the game will read as an `edit` event, which is an act with a ledger,
+    // and it declares PRIVILEGED for that reason. Never called from here - a conformance row on the
+    // stream would be a fabricated edit.
+    "record_edit",
   ].map((n) => [n, spec("act")])),
 
   // --- extension-mod tools (villagejobs): registered onto the shared registry by ANOTHER mod ----

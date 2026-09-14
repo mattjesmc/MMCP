@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MMCP cockpit</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2323a55a'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23102015'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="cockpit.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="dot" id="daemon-dot" title="daemon"></span>
+    <span class="name">mmcpd</span>
+    <span class="mono muted" id="daemon-line">connecting…</span>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-tab="projects" class="active">Projects</button>
+    <button data-tab="sessions">Sessions <span class="count" id="count-sessions"></span></button>
+    <button data-tab="changes">Changes <span class="count" id="count-changes"></span></button>
+    <button data-tab="blockbench">Blockbench <span class="count" id="count-bb"></span></button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-projects" class="tab active">
+    <div id="projects" class="cards"></div>
+    <p class="muted small" id="projects-empty" hidden>No projects registered. <code>mmcpd add &lt;root&gt;</code> reads a repository's <code>mcmod.port</code> and registers it.</p>
+  </section>
+
+  <section id="tab-sessions" class="tab">
+    <div class="toolbar">
+      <span class="muted small">Every MCP session the daemon holds: which project, which slice of the tool surface, what it last called. A profile switch fires <code>tools/list_changed</code> at the client.</span>
+    </div>
+    <div class="table-wrap">
+      <table id="sessions">
+        <thead><tr><th>Session</th><th>Project</th><th>Client</th><th>Profile</th><th class="num">Tools</th><th class="num">Calls</th><th>Last call</th><th>Streams</th><th>Blockbench</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="sessions-empty" hidden>No sessions. Register a project's URL in an agent client: <code id="sessions-url"></code></p>
+    <pre id="session-log" class="log" hidden></pre>
+  </section>
+
+  <section id="tab-changes" class="tab">
+    <div class="toolbar">
+      <label>Project <select id="changes-project"><option value="">all</option></select></label>
+      <label><input type="checkbox" id="changes-quiet" checked> hide <code>refused</code> and <code>none</code></label>
+      <span class="muted small">Every edit under a registered root and what became of it in the game. The same rows are <code>get_events {type:"edit"}</code> for the agent.</span>
+    </div>
+    <div class="table-wrap">
+      <table id="changes">
+        <thead><tr><th>When</th><th>Project</th><th>Op</th><th>Path</th><th>Feed</th><th>Act</th><th>Result</th><th class="num">ms</th><th>Note</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="changes-empty" hidden>Nothing yet. Write a file under a registered project's <code>src/</code>; the daemon lands it and the row appears here.</p>
+  </section>
+
+  <section id="tab-blockbench" class="tab">
+    <div class="toolbar">
+      <span class="muted small" id="bb-line">An instance of Blockbench per session, spawned on the session's first modelling call.</span>
+      <button id="bb-template" class="small">Re-seed template</button>
+    </div>
+    <div class="table-wrap">
+      <table id="blockbench">
+        <thead><tr><th>Session</th><th>Project</th><th>State</th><th>Port</th><th>PID</th><th class="num">Calls</th><th>Last call</th><th>Started</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="muted small" id="bb-empty" hidden>No instances running.</p>
+  </section>
+</main>
+
+<div id="toasts"></div>
+
+<template id="project-card">
+  <article class="card project">
+    <header class="card-head">
+      <h2 class="pname"></h2>
+      <span class="pill state"></span>
+      <span class="mono muted port"></span>
+      <span class="muted loader"></span>
+      <span class="mono muted root" title=""></span>
+    </header>
+    <div class="row facts">
+      <span class="fact"><span class="k">MCP</span> <code class="url copy" title="click to copy"></code></span>
+      <span class="fact sessions-fact"><span class="k">sessions</span> <span class="v psessions"></span></span>
+      <span class="fact"><span class="k">disk feed</span> <span class="v watch"></span></span>
+      <span class="fact game-fact" hidden><span class="k">game</span> <span class="v game"></span></span>
+    </div>
+    <div class="row actions">
+      <label>Target <select class="target"><option value="client">client</option><option value="server">server</option></select></label>
+      <button class="launch" title="stop the game on the port if any, relaunch without building, wait for the bridge">Launch</button>
+      <button class="rebuild primary" title="stop, gradlew build, relaunch, wait for the bridge">Rebuild &amp; launch</button>
+      <button class="stop" title="graceful quit over the bridge, then force-kill what still holds the port">Stop</button>
+      <label class="small" title="kill a supervisor that already owns the port's cycle and take it over"><input type="checkbox" class="takeover"> takeover</label>
+      <label class="small" title="fabric-api on the runtime classpath (the jar is unchanged)"><input type="checkbox" class="fabricapi"> fabric-api</label>
+      <label class="small" title="client only: boot into the authoring world with this screen document open">ui <input type="text" class="uidoc" placeholder="mod:screen" size="12"></label>
+      <button class="latest small" title="the tail of the game's logs/latest.log">latest.log</button>
+    </div>
+    <div class="run" hidden>
+      <div class="run-head">
+        <span class="pill phase"></span>
+        <span class="mono muted run-line"></span>
+        <button class="small toggle-log">hide</button>
+      </div>
+      <pre class="log runlog"></pre>
+    </div>
+    <div class="latest-box" hidden>
+      <div class="run-head"><span class="mono muted latest-line"></span><button class="small close-latest">close</button></div>
+      <pre class="log latestlog"></pre>
+    </div>
+  </article>
+</template>
+
+<script src="cockpit.js"></script>
+</body>
+</html>

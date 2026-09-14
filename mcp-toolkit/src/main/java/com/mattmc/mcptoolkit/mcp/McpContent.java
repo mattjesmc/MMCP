@@ -55,9 +55,20 @@ public final class McpContent {
             JsonObject rest = result.getAsJsonObject().deepCopy();
             JsonObject image = rest.getAsJsonObject("_image");
             rest.remove("_image");
+            if (!image.has("base64") || image.get("base64").isJsonNull()
+                || image.get("base64").getAsString().isEmpty()) {
+                // NO image part rather than an empty one. A blank picture with nothing saying it is
+                // blank is the uncapturable-observation failure this whole envelope exists to
+                // prevent — the model would read a picture, see nothing in it, and believe the
+                // nothing. It is a refusal, so it goes back as one, with whatever the tool did
+                // manage to say attached.
+                return error("a picture was promised and none arrived: the tool's `_image` carried "
+                    + "no base64 data. Nothing was observed — do not read this as an empty scene."
+                    + (rest.entrySet().isEmpty() ? "" : " The rest of the result: " + GSON.toJson(rest)));
+            }
             JsonObject part = new JsonObject();
             part.addProperty("type", "image");
-            part.addProperty("data", image.has("base64") ? image.get("base64").getAsString() : "");
+            part.addProperty("data", image.get("base64").getAsString());
             part.addProperty("mimeType", image.has("mimeType")
                 ? image.get("mimeType").getAsString() : "image/png");
             content.add(part);

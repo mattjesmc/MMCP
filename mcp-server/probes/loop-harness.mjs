@@ -84,6 +84,7 @@ export async function startStubBridge({ manifest, onCmd = () => ({ ok: true, res
  */
 export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0, window = null, person = false, allowAgents = false, legacy = false, claimedBy = null, onOpenWindow = null, onDockWindow = null, dock = false, app = "blockbench" }) {
   const calls = [];
+  const state = { queue: null };
   // THE MCP DOCK (BLOCKBENCH_ISOLATION_DESIGN.md section 11): a window that answers `role: "dock"`
   // and hands windows out on `POST /dock/window`. `onDockWindow` returns the port it gives, so a
   // probe can make the dock reuse a window it already has, stand a new one up, or fail to.
@@ -93,8 +94,11 @@ export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0
   const claims = [];
   const opens = [];
   let toolsRequests = 0;
+  let hellos = 0;
   let holder = claimedBy;
-  const holderBlock = () => (holder ? { session: holder.session, client: holder.client ?? null, connected: holder.connected !== false, seen_s_ago: 0 } : null);
+  const holderBlock = () => (holder
+    ? { session: holder.session, client: holder.client ?? null, connected: holder.connected !== false, seen_s_ago: 0, idle: holder.idle === true }
+    : null);
   const takeable = !person || allowAgents;
   const windowBlock = () => {
     if (!window) return {};
@@ -108,7 +112,7 @@ export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0
   const http = createServer(async (req, res) => {
     const url = (req.url || "/").split("?")[0];
     if (req.method === "GET" && url === "/presence") {
-      const entry = { session: req.headers["x-mcptk-session"] ?? null, client: req.headers["x-mcptk-client"] ?? null, closed: false };
+      const entry = { session: req.headers["x-mcptk-session"] ?? null, client: req.headers["x-mcptk-client"] ?? null, closed: false, res };
       presence.push(entry);
       open.add(res);
       res.writeHead(200, { "Content-Type": "application/x-ndjson" });
@@ -125,11 +129,16 @@ export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0
       return;
     }
     if (req.method === "GET" && (url === "/hello" || url === "/")) {
+      // Counted, because "how many windows does an idle session ask on a poll" is the difference
+      // between one remembered window and a sweep of the range (`peekBase`, shim 0.75.0).
+      hellos++;
       res.writeHead(200, { "Content-Type": "application/json" });
       // `app` is settable so a probe can put a STRANGER in the scan range - some other localhost
       // service that answers JSON on /hello. Scanning sixteen ports is sixteen chances to find one,
       // and everything below /hello would work on it, which is the whole reason the shim checks.
-      res.end(JSON.stringify({ ok: true, app, plugin: "mcptoolkit_bridge (stub)", tools: tools.length, ...windowBlock() }));
+      // `queue` is what plugin 0.11.0 says on /hello about what is running and how many wait
+      // (isolation record section 13); a probe sets `stub.queue` to make a timeout read it.
+      res.end(JSON.stringify({ ok: true, app, plugin: "mcptoolkit_bridge (stub)", tools: tools.length, ...windowBlock(), ...(state.queue ? { queue: state.queue } : {}) }));
       return;
     }
     let body = "";
@@ -162,10 +171,17 @@ export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0
       const sess = typeof msg.session === "string" ? { id: msg.session } : (msg.session ?? {});
       if (url === "/window") {
         opens.push(sess);
-        const answer = onOpenWindow
+        // `onOpenWindow` may ANSWER rather than only act, which is how plugin 0.10.0's two new
+        // replies on this route are stubbed: a reuse that names another window's port, and a
+        // refusal because this Blockbench is at its agent-window limit (isolation record 12.4).
+        // Neither carries the window block, because in both the `port` is not this window's.
+        let answer = onOpenWindow
           ? { ok: true, opened: true, requested_by: sess.id, autostart: true, ...windowBlock() }
           : { ok: false, error: "this Blockbench has no new_window action (not the desktop app?)", ...windowBlock() };
-        if (onOpenWindow) await onOpenWindow(sess);
+        if (onOpenWindow) {
+          const given = await onOpenWindow(sess);
+          if (given && typeof given === "object") answer = given;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(answer));
         return;
@@ -215,7 +231,25 @@ export async function startStubBlockbench({ tools, onCall = () => ({}), port = 0
     opens,
     dockAsks,
     get tools_requests() { return toolsRequests; },
+    get hellos() { return hellos; },
     holder: () => holder,
+    // What `POST /role {claim_for}` does to another window (plugin 0.8.0): the window the dock
+    // or the asked window hands over pre-claims ITSELF for whoever asked, so the asker's own
+    // claim is then a rejoin and cannot be refused.
+    preClaim: (s) => { holder = typeof s === "string" ? { session: s } : s; },
+    // Plugin 0.11.0's two eviction routes (isolation record section 13), for a probe to fire: what
+    // `/hello` says about the queue, and the last line a recycled session's presence socket reads
+    // before it is closed. `holder` is dropped with it, as the plugin drops the claim.
+    set queue(q) { state.queue = q; },
+    get queue() { return state.queue; },
+    evict: (session, reason = "recycled") => {
+      if (holder?.session === session) holder = null;
+      for (const p of presence) {
+        if (p.session !== session || p.closed) continue;
+        try { p.res.write(JSON.stringify({ ok: true, evicted: true, session, window, port: http.address().port, reason, note: `window ${window} (port ${http.address().port}) is no longer this session's (${reason}); the next call resolves a window of its own` }) + "\n"); } catch { /* closing anyway */ }
+        setTimeout(() => { try { p.res.destroy(); } catch { /* gone */ } }, 50);
+      }
+    },
     close: () => { for (const r of open) r.destroy(); return new Promise((r) => http.close(r)); },
   };
 }

@@ -1,15 +1,17 @@
 {
   "name": "mcp-toolkit-server",
-  "version": "0.73.0",
+  "version": "0.79.0",
   "description": "MCP server that drives an in-game MCP Toolkit bridge, exposing whatever tools the mod registers via its localhost /tools manifest.",
   "type": "module",
   "bin": {
-    "mcp-toolkit": "index.mjs"
+    "mcp-toolkit": "index.mjs",
+    "mmcpd": "daemon.mjs"
   },
   "scripts": {
     "test": "node --test \"memory/probes/*.test.mjs\"",
     "test:ablation": "node --test \"ablation/*.test.mjs\"",
     "test:live": "node --test \"probes/*.test.mjs\"",
+    "test:daemon": "node --test probes/daemon.test.mjs",
     "routes": "node memory/routes-cli.mjs"
   },
   "engines": {
