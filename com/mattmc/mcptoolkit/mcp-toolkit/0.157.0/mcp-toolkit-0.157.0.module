@@ -1,0 +1,89 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.mattmc.mcptoolkit",
+    "module": "mcp-toolkit",
+    "version": "0.157.0",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "9.5.1"
+    }
+  },
+  "variants": [
+    {
+      "name": "apiElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 25,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-api"
+      },
+      "files": [
+        {
+          "name": "mcp-toolkit-0.157.0.jar",
+          "url": "mcp-toolkit-0.157.0.jar",
+          "size": 2311665,
+          "sha512": "8caabf4f75e10b1d9c6083355aada333dd9739f3f2c58dd8864e31bb2100cc0bca5c383f447a983720b085c6c2b6fcf66b8347be3c74c01416252508268f9e36",
+          "sha256": "f8d8e251e07bb9049fb4f78d68b3dfd46c9f0dffc6cb7dc930b0919790f4b95c",
+          "sha1": "e472f0f1d789d91854c0c0749a70e435067fa118",
+          "md5": "b98104e1bdbcf21e9bebd8042c2af455"
+        }
+      ]
+    },
+    {
+      "name": "runtimeElements",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.jvm.version": 25,
+        "org.gradle.libraryelements": "jar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "net.fabricmc",
+          "module": "fabric-loader",
+          "version": {
+            "requires": "0.19.3"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "mcp-toolkit-0.157.0.jar",
+          "url": "mcp-toolkit-0.157.0.jar",
+          "size": 2311665,
+          "sha512": "8caabf4f75e10b1d9c6083355aada333dd9739f3f2c58dd8864e31bb2100cc0bca5c383f447a983720b085c6c2b6fcf66b8347be3c74c01416252508268f9e36",
+          "sha256": "f8d8e251e07bb9049fb4f78d68b3dfd46c9f0dffc6cb7dc930b0919790f4b95c",
+          "sha1": "e472f0f1d789d91854c0c0749a70e435067fa118",
+          "md5": "b98104e1bdbcf21e9bebd8042c2af455"
+        }
+      ]
+    },
+    {
+      "name": "sourcesElements",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "mcp-toolkit-0.157.0-sources.jar",
+          "url": "mcp-toolkit-0.157.0-sources.jar",
+          "size": 1379756,
+          "sha512": "81b89d12a23c3e39a1ed37e4fe34257c88a59ce9ff04056b65dca430a3779901d1a250ae146e081953ded6b27ead985f6e22274976198c131ada647a4b2bd201",
+          "sha256": "4178dd7d0ef25974b916eb64bc38c0680c9e1df615f7c76b77b3ac1e86f64311",
+          "sha1": "8997aa14a5eb55a1b80d08b19975e7c5614d90b8",
+          "md5": "3060dc5964ab07edc5bc551cceb134ce"
+        }
+      ]
+    }
+  ]
+}
